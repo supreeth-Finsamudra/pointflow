@@ -10,7 +10,8 @@ const ACCEL = 0.05; // extra gain proportional to swipe speed
 const SCROLL_DIV = 6; // px of finger travel per scroll notch
 const TAP_MS = 250; // max touch duration to count as a tap
 const TAP_SLOP = 8; // max movement (px) to still count as a tap
-const HOLD_MS = 450; // hold-still duration that starts a drag
+const HOLD_MS = 450; // hold-still duration that arms drag / right-click
+const DRAG_SLOP = 5; // movement (px) after arming that commits to a drag
 
 export default function Page() {
   const [status, setStatus] = useState<Status>("connecting");
@@ -110,7 +111,8 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
     startY: 0,
     startT: 0,
     moved: false,
-    longClicked: false,
+    armed: false, // held long enough to enter drag/right-click mode
+    dragging: false, // committed to a drag (mouse button held down)
     holdTimer: undefined as ReturnType<typeof setTimeout> | undefined,
     scroll: false,
     scrollY: 0,
@@ -146,13 +148,13 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
       s.startY = t.clientY;
       s.startT = e.timeStamp;
       s.moved = false;
-      s.longClicked = false;
-      // Hold still briefly → right click.
+      s.armed = false;
+      s.dragging = false;
+      // Hold still briefly → arm: then drag to select, or lift for right-click.
       clearHold();
       s.holdTimer = setTimeout(() => {
         if (s.active && !s.moved) {
-          s.longClicked = true;
-          send({ t: "click", button: "right" });
+          s.armed = true;
           navigator.vibrate?.(20);
         }
       }, HOLD_MS);
@@ -178,13 +180,31 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
       const dy = t.clientY - s.y;
       s.x = t.clientX;
       s.y = t.clientY;
-      if (Math.hypot(t.clientX - s.startX, t.clientY - s.startY) > TAP_SLOP) {
+      const distFromStart = Math.hypot(
+        t.clientX - s.startX,
+        t.clientY - s.startY,
+      );
+      const move = () => {
+        const gain = MOVE_GAIN * (1 + Math.hypot(dx, dy) * ACCEL);
+        send({ t: "move", dx: dx * gain, dy: dy * gain });
+      };
+
+      if (s.armed) {
+        // Hold has armed: moving commits to a drag (mouse button held down).
+        if (!s.dragging && distFromStart > DRAG_SLOP) {
+          s.dragging = true;
+          send({ t: "down", button: "left" });
+        }
+        if (s.dragging) move();
+        return;
+      }
+
+      // Normal cursor movement; moving past the slop cancels arming.
+      if (distFromStart > TAP_SLOP) {
         s.moved = true;
         clearHold();
       }
-      const speed = Math.hypot(dx, dy);
-      const gain = MOVE_GAIN * (1 + speed * ACCEL);
-      send({ t: "move", dx: dx * gain, dy: dy * gain });
+      move();
     };
 
     const onEnd = (e: TouchEvent) => {
@@ -196,12 +216,18 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
       if (!s.active) return;
       clearHold();
       const dt = e.timeStamp - s.startT;
-      // A quick tap = left click. Right click already fired on hold.
-      if (!s.moved && !s.longClicked && dt < TAP_MS) {
+      if (s.dragging) {
+        // End a drag/selection.
+        send({ t: "up", button: "left" });
+      } else if (s.armed) {
+        // Armed but never moved → right click.
+        send({ t: "click", button: "right" });
+      } else if (!s.moved && dt < TAP_MS) {
         send({ t: "click", button: "left" });
       }
       s.active = false;
-      s.longClicked = false;
+      s.armed = false;
+      s.dragging = false;
     };
 
     // Non-passive so preventDefault actually blocks page scroll/zoom.
@@ -223,9 +249,9 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
       className="trackpad relative flex flex-1 select-none items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03]"
     >
       <span className="pointer-events-none text-center text-sm leading-relaxed text-white/25">
-        Swipe to move · tap to click
+        Swipe to move · tap to click · two fingers to scroll
         <br />
-        two fingers to scroll · hold for right-click
+        hold then drag to select · hold then lift for right-click
       </span>
     </div>
   );
