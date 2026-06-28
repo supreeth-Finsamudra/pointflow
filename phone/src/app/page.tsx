@@ -67,7 +67,10 @@ export default function Page() {
   return (
     <main className="flex h-dvh flex-col gap-3 p-3">
       <StatusBar status={status} />
-      <Trackpad send={send} />
+      <div className="flex min-h-0 flex-1 gap-3">
+        <Trackpad send={send} />
+        <ScrollStrip send={send} />
+      </div>
       <ClickRow send={send} />
       <KeyRow send={send} />
       <TextBar send={send} />
@@ -253,6 +256,69 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
         <br />
         hold then drag to select · hold then lift for right-click
       </span>
+    </div>
+  );
+}
+
+/** A vertical strip on the right edge — drag with a thumb to scroll. */
+function ScrollStrip({ send }: { send: (o: Record<string, unknown>) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const st = useRef({ active: false, y: 0, acc: 0 });
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const s = st.current;
+
+    const onStart = (e: TouchEvent) => {
+      e.preventDefault();
+      s.active = true;
+      s.y = e.touches[0].clientY;
+      s.acc = 0;
+    };
+    const onMove = (e: TouchEvent) => {
+      e.preventDefault();
+      if (!s.active) return;
+      const y = e.touches[0].clientY;
+      // Like dragging a scrollbar thumb: finger down → scroll down.
+      s.acc += y - s.y;
+      s.y = y;
+      const notches = Math.trunc(s.acc / SCROLL_DIV);
+      if (notches !== 0) {
+        s.acc -= notches * SCROLL_DIV;
+        send({ t: "scroll", dx: 0, dy: notches });
+      }
+    };
+    const onEnd = (e: TouchEvent) => {
+      e.preventDefault();
+      s.active = false;
+    };
+
+    el.addEventListener("touchstart", onStart, { passive: false });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: false });
+    el.addEventListener("touchcancel", onEnd, { passive: false });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, [send]);
+
+  return (
+    <div
+      ref={ref}
+      className="flex w-12 shrink-0 touch-none select-none flex-col items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] py-4 text-white/30 active:bg-white/[0.06]"
+    >
+      <span className="text-lg leading-none">⌃</span>
+      <span
+        className="text-[10px] tracking-widest"
+        style={{ writingMode: "vertical-rl" }}
+      >
+        SCROLL
+      </span>
+      <span className="text-lg leading-none">⌄</span>
     </div>
   );
 }
