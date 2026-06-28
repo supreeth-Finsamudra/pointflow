@@ -301,6 +301,10 @@ function TextBar({ send }: { send: (o: Record<string, unknown>) => void }) {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             send({ t: "key", k: "enter" });
+            // The remote field was just submitted — reset our buffer locally
+            // (no backspaces; the typed text is already gone on the Mac side).
+            last.current = "";
+            setValue("");
           } else if (e.key === "Backspace" && value === "") {
             // Delete already-sent text once the local buffer is empty.
             e.preventDefault();
