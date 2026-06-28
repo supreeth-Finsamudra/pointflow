@@ -110,7 +110,7 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
     startY: 0,
     startT: 0,
     moved: false,
-    dragging: false,
+    longClicked: false,
     holdTimer: undefined as ReturnType<typeof setTimeout> | undefined,
     scroll: false,
     scrollY: 0,
@@ -146,13 +146,13 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
       s.startY = t.clientY;
       s.startT = e.timeStamp;
       s.moved = false;
-      s.dragging = false;
-      // Hold still briefly → begin a drag (press-and-hold).
+      s.longClicked = false;
+      // Hold still briefly → right click.
       clearHold();
       s.holdTimer = setTimeout(() => {
         if (s.active && !s.moved) {
-          s.dragging = true;
-          send({ t: "down", button: "left" });
+          s.longClicked = true;
+          send({ t: "click", button: "right" });
           navigator.vibrate?.(20);
         }
       }, HOLD_MS);
@@ -196,13 +196,12 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
       if (!s.active) return;
       clearHold();
       const dt = e.timeStamp - s.startT;
-      if (s.dragging) {
-        send({ t: "up", button: "left" });
-      } else if (!s.moved && dt < TAP_MS) {
+      // A quick tap = left click. Right click already fired on hold.
+      if (!s.moved && !s.longClicked && dt < TAP_MS) {
         send({ t: "click", button: "left" });
       }
       s.active = false;
-      s.dragging = false;
+      s.longClicked = false;
     };
 
     // Non-passive so preventDefault actually blocks page scroll/zoom.
@@ -226,7 +225,7 @@ function Trackpad({ send }: { send: (o: Record<string, unknown>) => void }) {
       <span className="pointer-events-none text-center text-sm leading-relaxed text-white/25">
         Swipe to move · tap to click
         <br />
-        two fingers to scroll · hold to drag
+        two fingers to scroll · hold for right-click
       </span>
     </div>
   );
@@ -288,23 +287,35 @@ function TextBar({ send }: { send: (o: Record<string, unknown>) => void }) {
     [send],
   );
 
+  // Submit = send Enter and reset the buffer (the typed text is already gone on
+  // the Mac side, so no backspaces).
+  const submit = useCallback(() => {
+    send({ t: "key", k: "enter" });
+    last.current = "";
+    setValue("");
+  }, [send]);
+
   return (
     <div className="flex items-end gap-2">
       <textarea
         rows={2}
         value={value}
         onChange={(e) => {
-          diffSend(e.target.value);
-          setValue(e.target.value);
+          const v = e.target.value;
+          // Soft keyboards often don't fire keydown for Return — they just
+          // insert a newline. Treat any newline as submit instead of typing it.
+          if (v.includes("\n")) {
+            diffSend(v.slice(0, v.indexOf("\n")));
+            submit();
+            return;
+          }
+          diffSend(v);
+          setValue(v);
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
-            send({ t: "key", k: "enter" });
-            // The remote field was just submitted — reset our buffer locally
-            // (no backspaces; the typed text is already gone on the Mac side).
-            last.current = "";
-            setValue("");
+            submit();
           } else if (e.key === "Backspace" && value === "") {
             // Delete already-sent text once the local buffer is empty.
             e.preventDefault();
@@ -315,16 +326,7 @@ function TextBar({ send }: { send: (o: Record<string, unknown>) => void }) {
         autoCapitalize="sentences"
         className="min-h-12 flex-1 resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-base outline-none placeholder:text-white/30 focus:border-white/30"
       />
-      <PadButton
-        accent
-        onPress={() => {
-          // Submit: send Enter, then reset the local buffer (the typed text is
-          // already gone on the Mac side, so no backspaces).
-          send({ t: "key", k: "enter" });
-          last.current = "";
-          setValue("");
-        }}
-      >
+      <PadButton accent onPress={submit}>
         ⏎
       </PadButton>
     </div>
