@@ -83,6 +83,9 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // Note: axum 0.7's `serve` takes a concrete TcpListener, so we can't set
+    // TCP_NODELAY per connection here. Pointer latency is kept low instead by
+    // rAF-batching sends on the phone (≤1 move per frame).
     axum::serve(listener, app).await.expect("server crashed");
 }
 

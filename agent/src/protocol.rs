@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-use crate::input::{InputCmd, MouseButton, SpecialKey};
+use crate::input::{ChordKey, InputCmd, Modifier, MouseButton, SpecialKey};
 
 /// A message from the phone. The first message on a connection MUST be `Auth`.
 #[derive(Debug, Deserialize)]
@@ -10,7 +10,7 @@ use crate::input::{InputCmd, MouseButton, SpecialKey};
 pub enum ClientMsg {
     /// Pairing handshake — must match the agent's session token.
     Auth { token: String },
-    /// Relative cursor move.
+    /// Relative cursor move, in (sub-)pixels.
     Move { dx: f64, dy: f64 },
     /// Click (or double-click) a button. Defaults to left.
     Click {
@@ -29,12 +29,18 @@ pub enum ClientMsg {
         #[serde(default)]
         button: ButtonName,
     },
-    /// Scroll wheel in notches.
+    /// Scroll in (sub-)pixels.
     Scroll { dx: f64, dy: f64 },
     /// Inject text at the current focus.
     Text { s: String },
     /// Tap a named special key.
     Key { k: String },
+    /// Hold modifiers + tap a key (e.g. {"mods":["ctrl"],"key":"left"}).
+    Chord {
+        #[serde(default)]
+        mods: Vec<String>,
+        key: String,
+    },
     /// Keep-alive; no effect.
     Ping,
 }
@@ -60,14 +66,11 @@ impl From<ButtonName> for MouseButton {
 
 impl ClientMsg {
     /// Convert an authenticated control message into an `InputCmd`.
-    /// Returns `None` for `Auth`/`Ping` (no input action).
+    /// Returns `None` for `Auth`/`Ping` (no input action) or unparseable keys.
     pub fn into_cmd(self) -> Option<InputCmd> {
         match self {
             ClientMsg::Auth { .. } | ClientMsg::Ping => None,
-            ClientMsg::Move { dx, dy } => Some(InputCmd::Move {
-                dx: dx.round() as i32,
-                dy: dy.round() as i32,
-            }),
+            ClientMsg::Move { dx, dy } => Some(InputCmd::Move { dx, dy }),
             ClientMsg::Click { button, double } => Some(InputCmd::Click {
                 button: button.into(),
                 double,
@@ -78,12 +81,13 @@ impl ClientMsg {
             ClientMsg::Up { button } => Some(InputCmd::Up {
                 button: button.into(),
             }),
-            ClientMsg::Scroll { dx, dy } => Some(InputCmd::Scroll {
-                dx: dx.round() as i32,
-                dy: dy.round() as i32,
-            }),
+            ClientMsg::Scroll { dx, dy } => Some(InputCmd::Scroll { dx, dy }),
             ClientMsg::Text { s } => Some(InputCmd::Text(s)),
             ClientMsg::Key { k } => SpecialKey::parse(&k).map(InputCmd::Key),
+            ClientMsg::Chord { mods, key } => {
+                let mods: Vec<Modifier> = mods.iter().filter_map(|m| Modifier::parse(m)).collect();
+                ChordKey::parse(&key).map(|key| InputCmd::Chord { mods, key })
+            }
         }
     }
 }
