@@ -1,0 +1,188 @@
+//! PointFlow desktop agent.
+//!
+//! Serves the static phone UI over the LAN and accepts a single authenticated
+//! WebSocket from a phone, translating its messages into real mouse/keyboard
+//! input on this Mac. Requires Accessibility permission.
+
+mod input;
+mod protocol;
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
+use axum::{
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
+use crossbeam_channel::Sender;
+use rand::Rng;
+use tower_http::services::ServeDir;
+
+use input::InputCmd;
+use protocol::ClientMsg;
+
+/// Default listen port. Override with POINTFLOW_PORT.
+const DEFAULT_PORT: u16 = 8742;
+
+#[derive(Clone)]
+struct AppState {
+    token: String,
+    tx: Sender<InputCmd>,
+}
+
+#[tokio::main]
+async fn main() {
+    let port: u16 = std::env::var("POINTFLOW_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(DEFAULT_PORT);
+
+    let token = gen_token();
+
+    // Dedicated thread owns the (non-Send) input engine; we feed it commands.
+    let (tx, rx) = crossbeam_channel::unbounded::<InputCmd>();
+    std::thread::spawn(move || input::run(rx));
+
+    let web_dir = resolve_web_dir();
+    let serve_dir = ServeDir::new(&web_dir).append_index_html_on_directories(true);
+
+    let state = AppState {
+        token: token.clone(),
+        tx,
+    };
+
+    let app = Router::new()
+        .route("/ws", get(ws_handler))
+        .fallback_service(serve_dir)
+        .with_state(state);
+
+    let ip = local_ip_address::local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|_| "localhost".to_string());
+    let url = format!("http://{ip}:{port}/?token={token}");
+
+    print_banner(&url, &web_dir);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[pointflow] could not bind 0.0.0.0:{port}: {e}");
+            std::process::exit(1);
+        }
+    };
+    axum::serve(listener, app).await.expect("server crashed");
+}
+
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+async fn handle_socket(mut socket: WebSocket, state: AppState) {
+    // First message must authenticate with the session token.
+    let authed = matches!(
+        socket.recv().await,
+        Some(Ok(Message::Text(t)))
+            if matches!(
+                serde_json::from_str::<ClientMsg>(&t),
+                Ok(ClientMsg::Auth { token }) if token == state.token
+            )
+    );
+
+    if !authed {
+        let _ = socket
+            .send(Message::Text("{\"t\":\"denied\"}".to_string()))
+            .await;
+        eprintln!("[pointflow] rejected unauthenticated connection");
+        return;
+    }
+
+    let _ = socket.send(Message::Text("{\"t\":\"ok\"}".to_string())).await;
+    println!("[pointflow] phone connected");
+
+    while let Some(Ok(msg)) = socket.recv().await {
+        match msg {
+            Message::Text(t) => {
+                if let Ok(m) = serde_json::from_str::<ClientMsg>(&t) {
+                    if let Some(cmd) = m.into_cmd() {
+                        // Channel send only fails if the input thread died.
+                        let _ = state.tx.send(cmd);
+                    }
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+    println!("[pointflow] phone disconnected");
+}
+
+/// 16 hex chars of randomness — embedded in the pairing QR/URL.
+fn gen_token() -> String {
+    let mut rng = rand::thread_rng();
+    (0..16)
+        .map(|_| format!("{:x}", rng.gen_range(0..16)))
+        .collect()
+}
+
+/// Find the built phone UI. Checks POINTFLOW_WEB_DIR, then paths relative to
+/// both the binary and the working directory.
+fn resolve_web_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("POINTFLOW_WEB_DIR") {
+        return PathBuf::from(dir);
+    }
+
+    let mut candidates: Vec<PathBuf> = vec![
+        PathBuf::from("phone/out"),
+        PathBuf::from("../phone/out"),
+        PathBuf::from("../../phone/out"),
+    ];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("phone-ui"));
+            candidates.push(dir.join("../phone/out"));
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|p| p.join("index.html").exists())
+        .unwrap_or_else(|| PathBuf::from("phone/out"))
+}
+
+fn print_banner(url: &str, web_dir: &Path) {
+    use qrcode::render::unicode;
+    use qrcode::QrCode;
+
+    println!("\n  PointFlow agent\n  ===============\n");
+
+    match QrCode::new(url.as_bytes()) {
+        Ok(code) => {
+            let qr = code
+                .render::<unicode::Dense1x2>()
+                .dark_color(unicode::Dense1x2::Light)
+                .light_color(unicode::Dense1x2::Dark)
+                .quiet_zone(true)
+                .build();
+            println!("{qr}");
+        }
+        Err(_) => {}
+    }
+
+    println!("  Scan the QR with your phone, or open this on your phone:\n");
+    println!("    {url}\n");
+    println!("  (Phone and Mac must be on the same WiFi network.)");
+
+    if !web_dir.join("index.html").exists() {
+        eprintln!(
+            "\n  ⚠  Phone UI not found at {}\n     Build it first:  (cd phone && pnpm build)\n",
+            web_dir.display()
+        );
+    }
+    println!();
+}
