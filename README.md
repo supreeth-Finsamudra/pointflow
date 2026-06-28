@@ -51,12 +51,27 @@ reminder.
 
 | Gesture | Action |
 | --- | --- |
-| Swipe | Move cursor |
+| Swipe | Move cursor (sub-pixel, accelerated) |
 | Tap | Left click |
-| Two-finger swipe | Scroll |
-| Hold then drag | Click-and-drag |
+| Double-tap | Double click |
+| Double-tap then drag | Drag / word-select immediately |
+| Hold then drag | Click-and-drag (text select) |
+| Hold then lift | Right click |
+| Two-finger swipe | Scroll (with momentum) |
+| Two-finger tap | Right click |
+| Three-finger swipe | ↑ Mission Control · ↓ App Exposé · ←/→ switch spaces |
+| Right-edge strip | Scroll (scrollbar-style + momentum) |
 | Text box | Type / dictate → injected at the Mac's focus |
 | ⌫ ⏎ Tab Esc | Special keys |
+
+Tap the **⚙** in the status bar for settings — pointer speed/acceleration,
+scroll speed, natural-scroll direction, momentum, and tap-to-click. Settings
+persist on the phone (localStorage).
+
+> **Three-finger swipes** map to the macOS keyboard shortcuts for Mission
+> Control / App Exposé / switching spaces. They work only if those shortcuts are
+> enabled (System Settings → Keyboard → Keyboard Shortcuts → Mission Control),
+> which they are by default.
 
 ## Config
 
@@ -73,6 +88,7 @@ time the agent starts.
 
 ## Status
 
-v0 — touchpad pointing, click/scroll/drag, and text injection. macOS only.
-Roadmap: packaged menu-bar app, keyboard modifiers/shortcuts, multi-monitor
+Touchpad pointing (sub-pixel + acceleration), pixel + momentum scrolling, a full
+gesture vocabulary, text injection, and tunable settings. macOS only.
+Roadmap: packaged menu-bar app, more keyboard shortcuts (⌘C/⌘V), multi-monitor
 tuning, optional gyro pointing.
