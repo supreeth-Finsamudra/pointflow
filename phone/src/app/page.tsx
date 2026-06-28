@@ -316,13 +316,16 @@ function TextBar({ send }: { send: (o: Record<string, unknown>) => void }) {
         className="min-h-12 flex-1 resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-base outline-none placeholder:text-white/30 focus:border-white/30"
       />
       <PadButton
+        accent
         onPress={() => {
-          // Clear the local buffer without injecting anything.
+          // Submit: send Enter, then reset the local buffer (the typed text is
+          // already gone on the Mac side, so no backspaces).
+          send({ t: "key", k: "enter" });
           last.current = "";
           setValue("");
         }}
       >
-        Clear
+        ⏎
       </PadButton>
     </div>
   );
@@ -331,10 +334,17 @@ function TextBar({ send }: { send: (o: Record<string, unknown>) => void }) {
 function PadButton({
   children,
   onPress,
+  accent = false,
 }: {
   children: React.ReactNode;
   onPress: () => void;
+  accent?: boolean;
 }) {
+  const base =
+    "select-none rounded-xl border px-3 py-3 text-base font-medium";
+  const theme = accent
+    ? "border-emerald-400/30 bg-emerald-500/20 text-emerald-200 active:bg-emerald-500/35"
+    : "border-white/10 bg-white/5 text-white/90 active:bg-white/15";
   return (
     <button
       type="button"
@@ -343,7 +353,7 @@ function PadButton({
         e.preventDefault();
         onPress();
       }}
-      className="select-none rounded-xl border border-white/10 bg-white/5 px-3 py-3 text-base font-medium text-white/90 active:bg-white/15"
+      className={`${base} ${theme}`}
     >
       {children}
     </button>
