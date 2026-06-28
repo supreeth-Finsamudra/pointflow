@@ -42,7 +42,19 @@ async fn main() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_PORT);
 
-    let token = gen_token();
+    let token = load_or_create_token();
+
+    let ip = local_ip_address::local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|_| "localhost".to_string());
+    let url = format!("http://{ip}:{port}/?token={token}");
+
+    // `--qr` just reprints the pairing QR for the saved token and exits, so you
+    // can re-pair a device without restarting (or disturbing) a running agent.
+    if std::env::args().any(|a| a == "--qr") {
+        print_qr(&url);
+        return;
+    }
 
     // Dedicated thread owns the (non-Send) input engine; we feed it commands.
     let (tx, rx) = crossbeam_channel::unbounded::<InputCmd>();
@@ -60,11 +72,6 @@ async fn main() {
         .route("/ws", get(ws_handler))
         .fallback_service(serve_dir)
         .with_state(state);
-
-    let ip = local_ip_address::local_ip()
-        .map(|ip| ip.to_string())
-        .unwrap_or_else(|_| "localhost".to_string());
-    let url = format!("http://{ip}:{port}/?token={token}");
 
     print_banner(&url, &web_dir);
 
@@ -130,6 +137,34 @@ fn gen_token() -> String {
         .collect()
 }
 
+/// Where the persistent pairing token lives: `~/.pointflow/token`.
+fn token_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".pointflow").join("token"))
+}
+
+/// Load the saved pairing token, creating (and persisting) one on first run.
+/// A stable token means restarting the agent — or running `--qr` — reuses the
+/// same QR, so paired phones keep working across restarts.
+fn load_or_create_token() -> String {
+    if let Some(path) = token_path() {
+        if let Ok(saved) = std::fs::read_to_string(&path) {
+            let saved = saved.trim();
+            if !saved.is_empty() {
+                return saved.to_string();
+            }
+        }
+        let token = gen_token();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(&path, &token) {
+            eprintln!("[pointflow] could not persist token ({e}); using a session-only one");
+        }
+        return token;
+    }
+    gen_token()
+}
+
 /// Find the built phone UI. Checks POINTFLOW_WEB_DIR, then paths relative to
 /// both the binary and the working directory.
 fn resolve_web_dir() -> PathBuf {
@@ -155,28 +190,30 @@ fn resolve_web_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("phone/out"))
 }
 
-fn print_banner(url: &str, web_dir: &Path) {
+/// Render the pairing QR + URL to the terminal.
+fn print_qr(url: &str) {
     use qrcode::render::unicode;
     use qrcode::QrCode;
 
     println!("\n  PointFlow agent\n  ===============\n");
 
-    match QrCode::new(url.as_bytes()) {
-        Ok(code) => {
-            let qr = code
-                .render::<unicode::Dense1x2>()
-                .dark_color(unicode::Dense1x2::Light)
-                .light_color(unicode::Dense1x2::Dark)
-                .quiet_zone(true)
-                .build();
-            println!("{qr}");
-        }
-        Err(_) => {}
+    if let Ok(code) = QrCode::new(url.as_bytes()) {
+        let qr = code
+            .render::<unicode::Dense1x2>()
+            .dark_color(unicode::Dense1x2::Light)
+            .light_color(unicode::Dense1x2::Dark)
+            .quiet_zone(true)
+            .build();
+        println!("{qr}");
     }
 
     println!("  Scan the QR with your phone, or open this on your phone:\n");
     println!("    {url}\n");
     println!("  (Phone and Mac must be on the same WiFi network.)");
+}
+
+fn print_banner(url: &str, web_dir: &Path) {
+    print_qr(url);
 
     if !web_dir.join("index.html").exists() {
         eprintln!(
