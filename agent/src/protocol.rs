@@ -41,13 +41,17 @@ pub enum ClientMsg {
         mods: Vec<String>,
         key: String,
     },
-    /// Terminal keystrokes as a string (binary frames are preferred, but this
-    /// is accepted as a JSON fallback). Routed to the PTY, not `enigo`.
-    #[serde(rename = "tin")]
-    TermInput { s: String },
-    /// Resize the streamed terminal's PTY to the phone's viewport.
-    #[serde(rename = "tresize")]
-    TermResize { cols: u16, rows: u16 },
+    /// Start mirroring the Mac's active terminal window to this phone. The
+    /// agent only captures/encodes while at least one phone is viewing.
+    #[serde(rename = "mstart")]
+    MirrorStart,
+    /// Stop mirroring (phone closed the terminal view).
+    #[serde(rename = "mstop")]
+    MirrorStop,
+    /// Bring the mirrored terminal app to the front, so typed keystrokes land
+    /// in it.
+    #[serde(rename = "mfocus")]
+    MirrorFocus,
     /// Keep-alive; no effect.
     Ping,
 }
@@ -78,8 +82,9 @@ impl ClientMsg {
         match self {
             ClientMsg::Auth { .. }
             | ClientMsg::Ping
-            | ClientMsg::TermInput { .. }
-            | ClientMsg::TermResize { .. } => None,
+            | ClientMsg::MirrorStart
+            | ClientMsg::MirrorStop
+            | ClientMsg::MirrorFocus => None,
             ClientMsg::Move { dx, dy } => Some(InputCmd::Move { dx, dy }),
             ClientMsg::Click { button, double } => Some(InputCmd::Click {
                 button: button.into(),

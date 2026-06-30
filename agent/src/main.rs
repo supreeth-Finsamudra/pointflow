@@ -5,8 +5,8 @@
 //! input on this Mac. Requires Accessibility permission.
 
 mod input;
+mod mirror;
 mod protocol;
-mod term;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -28,8 +28,8 @@ use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 
 use input::InputCmd;
+use mirror::Mirror;
 use protocol::ClientMsg;
-use term::Term;
 
 /// Default listen port. Override with POINTFLOW_PORT.
 const DEFAULT_PORT: u16 = 8742;
@@ -38,9 +38,8 @@ const DEFAULT_PORT: u16 = 8742;
 struct AppState {
     token: String,
     tx: Sender<InputCmd>,
-    /// The shared shell streamed to phones. `None` if the PTY failed to spawn,
-    /// in which case the agent still runs as a pure input device.
-    term: Option<Arc<Term>>,
+    /// Live mirror of the Mac's active terminal window, streamed to phones.
+    mirror: Arc<Mirror>,
 }
 
 #[tokio::main]
@@ -68,15 +67,9 @@ async fn main() {
     let (tx, rx) = crossbeam_channel::unbounded::<InputCmd>();
     std::thread::spawn(move || input::run(rx));
 
-    // Persistent shell streamed to phones. Non-fatal if it can't start — the
-    // agent then just works as a trackpad/keyboard.
-    let term = match Term::spawn() {
-        Ok(t) => Some(t),
-        Err(e) => {
-            eprintln!("[pointflow] terminal streaming disabled (PTY failed: {e})");
-            None
-        }
-    };
+    // Captures the active terminal window on demand and streams it to phones.
+    // Idles cheaply until a phone opens the mirror.
+    let mirror = Mirror::start();
 
     let web_dir = resolve_web_dir();
     let serve_dir = ServeDir::new(&web_dir).append_index_html_on_directories(true);
@@ -84,7 +77,7 @@ async fn main() {
     let state = AppState {
         token: token.clone(),
         tx,
-        term,
+        mirror,
     };
 
     let app = Router::new()
@@ -134,55 +127,51 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let _ = socket.send(Message::Text("{\"t\":\"ok\"}".to_string())).await;
     println!("[pointflow] phone connected");
 
-    // Bidirectional from here: one half streams the shell's output to the
-    // phone, the other routes the phone's messages (input + terminal).
+    // Bidirectional from here: one half streams the mirrored terminal window
+    // to the phone as JPEG frames, the other routes the phone's messages.
     let (mut sink, mut stream) = socket.split();
 
-    // Send half: replay the scrollback snapshot, then stream live PTY output as
-    // binary frames. Skipped entirely if the terminal isn't available.
-    let send_task = state.term.clone().map(|term| {
+    // Send half: forward live capture frames as binary. Frames only arrive
+    // while this phone has the mirror started (viewers > 0).
+    let send_task = {
+        let mut frames = state.mirror.subscribe();
         tokio::spawn(async move {
-            let (snapshot, mut live) = term.subscribe();
-            if !snapshot.is_empty() && sink.send(Message::Binary(snapshot)).await.is_err() {
-                return;
-            }
             loop {
-                match live.recv().await {
-                    Ok(chunk) => {
-                        if sink.send(Message::Binary(chunk)).await.is_err() {
+                match frames.recv().await {
+                    Ok(jpeg) => {
+                        if sink.send(Message::Binary(jpeg)).await.is_err() {
                             break;
                         }
                     }
-                    // A slow phone fell behind; keep going from the latest.
+                    // A slow phone fell behind; resume from the latest frame.
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         })
-    });
+    };
 
-    // Recv half: binary frames are terminal keystrokes; JSON text is input or
-    // terminal control; everything else flows to the input engine as before.
+    // Recv half: mirror control toggles capture; everything else is input that
+    // flows to the engine and drives the real (focused) terminal.
+    let mut mirroring = false;
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
-            Message::Binary(b) => {
-                if let Some(term) = &state.term {
-                    term.write_input(&b);
-                }
-            }
             Message::Text(t) => {
                 if let Ok(m) = serde_json::from_str::<ClientMsg>(&t) {
                     match m {
-                        ClientMsg::TermInput { s } => {
-                            if let Some(term) = &state.term {
-                                term.write_input(s.as_bytes());
+                        ClientMsg::MirrorStart => {
+                            if !mirroring {
+                                state.mirror.add_viewer();
+                                mirroring = true;
                             }
                         }
-                        ClientMsg::TermResize { cols, rows } => {
-                            if let Some(term) = &state.term {
-                                term.resize(cols, rows);
+                        ClientMsg::MirrorStop => {
+                            if mirroring {
+                                state.mirror.remove_viewer();
+                                mirroring = false;
                             }
                         }
+                        ClientMsg::MirrorFocus => state.mirror.focus(),
                         // Channel send only fails if the input thread died.
                         other => {
                             if let Some(cmd) = other.into_cmd() {
@@ -197,9 +186,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         }
     }
 
-    if let Some(task) = send_task {
-        task.abort();
+    if mirroring {
+        state.mirror.remove_viewer();
     }
+    send_task.abort();
     println!("[pointflow] phone disconnected");
 }
 

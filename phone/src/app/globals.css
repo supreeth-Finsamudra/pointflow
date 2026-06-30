@@ -35,8 +35,3 @@ textarea {
   -webkit-user-select: text;
   user-select: text;
 }
-
-/* Let the streamed terminal scroll vertically with a finger. */
-.xterm .xterm-viewport {
-  touch-action: pan-y;
-}

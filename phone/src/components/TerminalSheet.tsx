@@ -1,34 +1,38 @@
 "use client";
 
-// Full-screen terminal overlay. Renders the agent's streamed shell with
-// xterm.js: PTY output → screen, taps focus the input so the phone keyboard
-// pops up, keystrokes → PTY. xterm is dynamically imported so it never runs
-// during the static build/prerender.
+// Full-screen mirror of the Mac's active terminal window. Live JPEG frames are
+// painted into an <img>; typing/keys reuse the existing injection path so they
+// drive the *real* focused terminal (where Claude Code is running). The sheet
+// height tracks the visual viewport so the type bar stays above the on-screen
+// keyboard.
 
 import { useEffect, useRef, useState } from "react";
-import "@xterm/xterm/css/xterm.css";
-import type { TermHandler } from "../lib/useAgent";
+import { Send, msg } from "../lib/protocol";
+import type { FrameHandler } from "../lib/useAgent";
+import { TextBar } from "./TextBar";
 
 type Props = {
   onClose: () => void;
-  sendBytes: (bytes: Uint8Array) => void;
-  sendResize: (cols: number, rows: number) => void;
-  onTerm: (handler: TermHandler) => () => void;
+  send: Send;
+  onFrame: (handler: FrameHandler) => () => void;
 };
 
-export function TerminalSheet({
-  onClose,
-  sendBytes,
-  sendResize,
-  onTerm,
-}: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const termRef = useRef<any>(null);
-  // Track the *visible* viewport height. When the on-screen keyboard opens it
-  // shrinks the visual viewport; we shrink the sheet to match so the active
-  // prompt line (and what you type) stays above the keyboard instead of behind
-  // it. The ResizeObserver below then refits xterm to the new height.
+const QUICK_KEYS: { label: string; k: string }[] = [
+  { label: "Esc", k: "escape" },
+  { label: "Tab", k: "tab" },
+  { label: "↑", k: "up" },
+  { label: "↓", k: "down" },
+  { label: "←", k: "left" },
+  { label: "→", k: "right" },
+];
+
+export function TerminalSheet({ onClose, send, onFrame }: Props) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const urlRef = useRef<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [gotFrame, setGotFrame] = useState(false);
+  // Shrink the sheet to the visible viewport when the keyboard opens, so the
+  // type bar/quick keys don't end up hidden behind it.
   const [viewH, setViewH] = useState<number | null>(null);
 
   useEffect(() => {
@@ -47,91 +51,128 @@ export function TerminalSheet({
   }, []);
 
   useEffect(() => {
-    let disposed = false;
-    let cleanupTerm: (() => void) | null = null;
-    let ro: ResizeObserver | null = null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let term: any = null;
-    const enc = new TextEncoder();
+    // Begin capture and bring the terminal to the front so typing lands in it.
+    send(msg.mstart());
+    send(msg.mfocus());
 
-    (async () => {
-      const [{ Terminal }, { FitAddon }] = await Promise.all([
-        import("@xterm/xterm"),
-        import("@xterm/addon-fit"),
-      ]);
-      if (disposed || !hostRef.current) return;
-
-      term = new Terminal({
-        cursorBlink: true,
-        fontFamily:
-          'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-        fontSize: 13,
-        theme: { background: "#0a0a0a", foreground: "#e5e5e5" },
-        macOptionIsMeta: true,
-        scrollback: 5000,
-      });
-      const fit = new FitAddon();
-      term.loadAddon(fit);
-      term.open(hostRef.current);
-      termRef.current = term;
-
-      const doFit = () => {
-        try {
-          fit.fit();
-          sendResize(term.cols, term.rows);
-          term.scrollToBottom();
-        } catch {
-          /* ignore transient measurement errors */
-        }
-      };
-      doFit();
-      term.focus();
-
-      // Keystrokes → PTY.
-      term.onData((d: string) => sendBytes(enc.encode(d)));
-
-      // PTY output → screen (history replay + live).
-      cleanupTerm = onTerm((bytes) => term.write(bytes));
-
-      // Refit whenever the host box changes size — including when `viewH`
-      // shrinks the sheet for the keyboard.
-      ro = new ResizeObserver(() => doFit());
-      ro.observe(hostRef.current);
-    })();
+    const cleanup = onFrame((bytes) => {
+      const img = imgRef.current;
+      if (!img) return;
+      const url = URL.createObjectURL(
+        new Blob([bytes], { type: "image/jpeg" }),
+      );
+      const old = urlRef.current;
+      img.src = url;
+      urlRef.current = url;
+      // The previous frame is already decoded/displayed; safe to free.
+      if (old) URL.revokeObjectURL(old);
+      setGotFrame(true);
+    });
 
     return () => {
-      disposed = true;
-      cleanupTerm?.();
-      ro?.disconnect();
-      term?.dispose();
-      termRef.current = null;
+      cleanup();
+      send(msg.mstop());
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
     };
-  }, [onTerm, sendBytes, sendResize]);
+  }, [onFrame, send]);
 
   return (
     <div
       className="fixed left-0 top-0 z-50 flex w-full flex-col bg-[#0a0a0a]"
       style={{ height: viewH ? `${viewH}px` : "100dvh" }}
     >
+      {/* header */}
       <div className="flex items-center justify-between px-3 py-2">
         <span className="font-mono text-sm font-semibold tracking-tight text-emerald-300/90">
-          {">_ terminal"}
+          {">_ live terminal"}
         </span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
-        >
-          Done
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => send(msg.mfocus())}
+            className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
+          >
+            Focus
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
+          >
+            Done
+          </button>
+        </div>
       </div>
+
+      {/* mirror viewport — scroll to pan when zoomed in */}
       <div
-        ref={hostRef}
-        // Tapping focuses xterm's input inside the gesture, which reliably
-        // raises the phone keyboard.
-        onPointerDown={() => termRef.current?.focus()}
-        className="min-h-0 flex-1 overflow-hidden px-2"
-      />
+        className="relative min-h-0 flex-1 overflow-auto bg-black"
+        style={{ touchAction: "pan-x pan-y" }}
+      >
+        {!gotFrame && (
+          <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm leading-relaxed text-white/40">
+            Waiting for your terminal… If it stays blank, grant{" "}
+            <span className="text-white/70">Screen Recording</span> permission to
+            your terminal on the Mac (System Settings → Privacy &amp; Security)
+            and restart the agent.
+          </div>
+        )}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          ref={imgRef}
+          alt="Live terminal"
+          style={{ width: `${zoom * 100}%`, height: "auto", display: "block" }}
+        />
+      </div>
+
+      {/* quick keys + zoom */}
+      <div className="flex items-center gap-1.5 overflow-x-auto px-2 py-2">
+        {QUICK_KEYS.map((key) => (
+          <KeyBtn key={key.k} onPress={() => send(msg.key(key.k))}>
+            {key.label}
+          </KeyBtn>
+        ))}
+        <KeyBtn onPress={() => send(msg.chord(["ctrl"], "c"))}>⌃C</KeyBtn>
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <KeyBtn
+            onPress={() => setZoom((z) => Math.max(0.5, +(z * 0.8).toFixed(2)))}
+          >
+            −
+          </KeyBtn>
+          <span className="w-10 text-center text-xs tabular-nums text-white/50">
+            {Math.round(zoom * 100)}%
+          </span>
+          <KeyBtn
+            onPress={() => setZoom((z) => Math.min(4, +(z * 1.25).toFixed(2)))}
+          >
+            +
+          </KeyBtn>
+        </div>
+      </div>
+
+      {/* typing → injected into the focused (mirrored) terminal */}
+      <div className="px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <TextBar send={send} />
+      </div>
     </div>
+  );
+}
+
+function KeyBtn({
+  children,
+  onPress,
+}: {
+  children: React.ReactNode;
+  onPress: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPress}
+      className="shrink-0 select-none rounded-lg bg-white/10 px-3 py-1.5 font-mono text-sm text-white/80 active:bg-white/20"
+    >
+      {children}
+    </button>
   );
 }

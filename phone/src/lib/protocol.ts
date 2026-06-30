@@ -19,7 +19,9 @@ export const msg = {
   text: (s: string) => ({ t: "text", s }),
   key: (k: string) => ({ t: "key", k }),
   chord: (mods: string[], key: string) => ({ t: "chord", mods, key }),
-  // Resize the streamed terminal's PTY to the phone's viewport. Terminal
-  // keystrokes and output ride raw binary frames, not these JSON builders.
-  tresize: (cols: number, rows: number) => ({ t: "tresize", cols, rows }),
+  // Live terminal-window mirror controls. Frames arrive as raw binary, not
+  // through these JSON builders; typing reuses text/key/chord above.
+  mstart: () => ({ t: "mstart" }),
+  mstop: () => ({ t: "mstop" }),
+  mfocus: () => ({ t: "mfocus" }),
 };

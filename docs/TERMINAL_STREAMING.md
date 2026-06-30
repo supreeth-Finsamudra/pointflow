@@ -1,72 +1,79 @@
-# Terminal streaming
+# Terminal streaming (live window mirror)
 
-Drive a real shell (and Claude Code) from your phone — a crisp, text-based
-terminal layered on top of the existing trackpad/keyboard, over the same
-token-paired WebSocket. No extra macOS permission, no cloud.
+See and drive whatever is **already running** in your Mac's terminal — Claude
+Code included — from your phone. The phone shows a live picture of your real
+terminal window and types into it through the input path PointFlow already has.
+No new shell, no cloud.
 
-## Why text, not video
+## Why a window mirror (not a PTY)
 
-The phone renders the shell with **xterm.js** fed by raw PTY bytes. That's
-pixel-perfect text, ~nothing of bandwidth, and far lower latency than
-screen-capturing a window. The tradeoff: it's PointFlow's own login shell, not
-a mirror of an existing `Terminal.app` window. You run Claude Code *in this
-shell* and watch/drive it from the phone.
+An earlier approach spawned its own PTY shell, but that's a *separate* process —
+it can't show the terminal (and Claude Code session) you already have open. To
+mirror "whatever is running," the agent captures your actual terminal **window**
+and streams it; typing reuses the existing keystroke injection so it lands in
+the real, focused terminal.
+
+Tradeoff: it's video (JPEG frames), so it needs **Screen Recording** permission
+and is heavier than text. The win: zero workflow change — keep using
+Terminal.app/iTerm and Claude Code exactly as you do now.
 
 ## Architecture
 
 ```
-            binary frames (PTY output)
-  [ Mac agent ] ───────────────────────────► [ phone: xterm.js ]
-   • one PTY    ◄───────────────────────────   • Terminal sheet
-   • login shell   binary frames (keystrokes)   • tap-to-type
-                   {t:"tresize",cols,rows}
+            JPEG frames (active terminal window)
+  [ Mac agent ] ───────────────────────────────► [ phone: <img> mirror ]
+   • xcap capture  ◄──── text / key / chord ─────   • zoom + pan
+   • JPEG encode        (existing injection)         • quick keys + type bar
+   • input injection ──► drives the REAL terminal    • Focus button
 ```
 
-- **One persistent PTY** is spawned at agent startup (`agent/src/term.rs`),
-  running `$SHELL -l`. It outlives any single phone connection, so Claude Code
-  keeps running across phone sleeps/reconnects.
-- A **reader thread** pumps PTY output into (a) a capped **scrollback ring**
-  (256 KB) and (b) a Tokio **broadcast** channel — under one lock, so attach is
-  race-free.
-- Each WebSocket, after the existing token auth, **splits** into:
-  - a send task: replays the scrollback snapshot, then streams live output as
-    **binary** frames;
-  - a recv task: routes **binary** frames → PTY input, `tresize` JSON →
-    `master.resize()`, and everything else through the unchanged input path.
-- This is fully **additive**: mouse/keyboard injection (`input.rs`) is
-  untouched; terminal I/O never goes through `enigo`.
+- **Capture** (`agent/src/mirror.rs`): a background thread picks the focused (or
+  front-most) terminal window via `xcap` — which uses macOS **ScreenCaptureKit**
+  under the hood — captures it, downscales to ≤1280 px wide, JPEG-encodes
+  (q=70), and broadcasts the frame. Runs ~10 fps, and **only while a phone is
+  viewing** (a viewer counter gates capture so it idles cheaply otherwise).
+- **Transport**: frames go over the existing token-paired WebSocket as **binary**
+  frames. JSON text still carries the auth handshake and all control/input.
+- **Typing**: the phone sends the same `text` / `key` / `chord` messages the
+  trackpad keyboard uses; they inject into the focused app — i.e. the terminal
+  being mirrored. `mfocus` brings that terminal to the front so keystrokes land.
+- **Untouched**: the trackpad/keyboard injection path (`input.rs`) is unchanged;
+  the mirror only *adds* the picture.
 
-## Wire protocol (additions only)
+## Wire protocol (additions)
 
 | Direction | Frame | Meaning |
 | --- | --- | --- |
-| agent → phone | **binary** | raw PTY output bytes (write straight to xterm) |
-| agent → phone | text `{"t":"ok"\|"denied"}` | existing auth handshake (unchanged) |
-| phone → agent | **binary** | raw keystroke bytes from xterm `onData` |
-| phone → agent | text `{"t":"tresize","cols":C,"rows":R}` | resize the PTY |
-
-Binary vs text is the discriminator: binary is always terminal payload; text is
-always JSON control/input. No base64, no ambiguity with existing messages.
-
-## Reconnect / seamlessness
-
-- The PTY is process-lifetime, not connection-lifetime → Claude Code survives
-  reconnects.
-- On (re)attach the phone gets the scrollback snapshot, then sends `tresize`
-  for its viewport, which triggers `SIGWINCH` and makes TUIs (Claude Code,
-  vim, etc.) repaint to the current state.
+| agent → phone | **binary** | one JPEG frame of the active terminal window |
+| agent → phone | text `{"t":"ok"\|"denied"}` | existing auth handshake |
+| phone → agent | text `{"t":"mstart"}` | start mirroring (increments viewers) |
+| phone → agent | text `{"t":"mstop"}` | stop mirroring |
+| phone → agent | text `{"t":"mfocus"}` | bring the mirrored terminal to front |
+| phone → agent | text `{"t":"text"\|"key"\|"chord",…}` | inject into the real terminal |
 
 ## Phone UX
 
-- A **Terminal** button in the status bar opens a full-screen sheet (xterm.js +
-  FitAddon). Closing returns to the trackpad — the trackpad keeps working.
-- Tapping the terminal focuses xterm's hidden textarea inside the touch
-  gesture, which raises the mobile keyboard. Autocorrect/autocapitalize are
-  disabled so prompts aren't mangled.
+- A `>_` button in the status bar opens a full-screen mirror sheet.
+- The live window renders into an `<img>`; **zoom −/+** and scroll-to-pan let you
+  read small text. The sheet height tracks the visual viewport so the type bar
+  stays above the on-screen keyboard.
+- A **type bar** (reused from the trackpad) injects what you type/dictate; a
+  **quick-key row** sends Esc / Tab / arrows / ⌃C for Claude Code's prompts.
+- A **Focus** button re-fronts the terminal if focus drifted.
+
+## Permission
+
+First capture needs **Screen Recording**: System Settings → Privacy & Security →
+Screen Recording → enable the app that launched the agent (Terminal/iTerm),
+then restart the agent. Until granted, window enumeration returns nothing and
+the phone shows a "waiting for your terminal" hint.
 
 ## Status / follow-ups
 
-- MVP: single shared session, last-resize-wins, no auth beyond the existing
-  session token (terminal rides the already-authenticated socket).
-- Possible later: detect a frontmost `Terminal.app`/`iTerm` to auto-surface the
-  button; `tmux`-backed shared session visible on the Mac too; multiple panes.
+- MVP: mirrors the focused/front-most terminal; last-writer-wins for multiple
+  phones; ~10 fps JPEG.
+- Possible later: H.264/VideoToolbox for smoother/cheaper streaming; let the
+  phone pick which window from a list; map two-finger swipe to inject scroll for
+  terminal scrollback; tap-on-image → click via coordinate mapping.
+- The previous PTY implementation is kept (uncompiled) in `agent/src/term.rs`
+  for a future opt-in "PointFlow shell"/tmux mode.
