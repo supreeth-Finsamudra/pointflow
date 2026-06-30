@@ -5,7 +5,7 @@
 // pops up, keystrokes → PTY. xterm is dynamically imported so it never runs
 // during the static build/prerender.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import type { TermHandler } from "../lib/useAgent";
 
@@ -23,6 +23,28 @@ export function TerminalSheet({
   onTerm,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const termRef = useRef<any>(null);
+  // Track the *visible* viewport height. When the on-screen keyboard opens it
+  // shrinks the visual viewport; we shrink the sheet to match so the active
+  // prompt line (and what you type) stays above the keyboard instead of behind
+  // it. The ResizeObserver below then refits xterm to the new height.
+  const [viewH, setViewH] = useState<number | null>(null);
+
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const update = () =>
+      setViewH(vv ? Math.round(vv.height) : window.innerHeight);
+    update();
+    vv?.addEventListener("resize", update);
+    vv?.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => {
+      vv?.removeEventListener("resize", update);
+      vv?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -30,7 +52,6 @@ export function TerminalSheet({
     let ro: ResizeObserver | null = null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let term: any = null;
-    let doFit: (() => void) | null = null;
     const enc = new TextEncoder();
 
     (async () => {
@@ -52,11 +73,13 @@ export function TerminalSheet({
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(hostRef.current);
+      termRef.current = term;
 
-      doFit = () => {
+      const doFit = () => {
         try {
           fit.fit();
           sendResize(term.cols, term.rows);
+          term.scrollToBottom();
         } catch {
           /* ignore transient measurement errors */
         }
@@ -70,27 +93,26 @@ export function TerminalSheet({
       // PTY output → screen (history replay + live).
       cleanupTerm = onTerm((bytes) => term.write(bytes));
 
-      ro = new ResizeObserver(() => doFit?.());
+      // Refit whenever the host box changes size — including when `viewH`
+      // shrinks the sheet for the keyboard.
+      ro = new ResizeObserver(() => doFit());
       ro.observe(hostRef.current);
-      window.addEventListener("resize", () => doFit?.());
-      // The mobile keyboard changes the visual viewport, not window size.
-      window.visualViewport?.addEventListener("resize", () => doFit?.());
     })();
 
     return () => {
       disposed = true;
       cleanupTerm?.();
       ro?.disconnect();
-      if (doFit) {
-        window.removeEventListener("resize", doFit);
-        window.visualViewport?.removeEventListener("resize", doFit);
-      }
       term?.dispose();
+      termRef.current = null;
     };
   }, [onTerm, sendBytes, sendResize]);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#0a0a0a]">
+    <div
+      className="fixed left-0 top-0 z-50 flex w-full flex-col bg-[#0a0a0a]"
+      style={{ height: viewH ? `${viewH}px` : "100dvh" }}
+    >
       <div className="flex items-center justify-between px-3 py-2">
         <span className="font-mono text-sm font-semibold tracking-tight text-emerald-300/90">
           {">_ terminal"}
@@ -105,7 +127,10 @@ export function TerminalSheet({
       </div>
       <div
         ref={hostRef}
-        className="min-h-0 flex-1 overflow-hidden px-2 pb-[env(safe-area-inset-bottom)]"
+        // Tapping focuses xterm's input inside the gesture, which reliably
+        // raises the phone keyboard.
+        onPointerDown={() => termRef.current?.focus()}
+        className="min-h-0 flex-1 overflow-hidden px-2"
       />
     </div>
   );
