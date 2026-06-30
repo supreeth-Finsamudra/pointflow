@@ -19,9 +19,8 @@ export const msg = {
   text: (s: string) => ({ t: "text", s }),
   key: (k: string) => ({ t: "key", k }),
   chord: (mods: string[], key: string) => ({ t: "chord", mods, key }),
-  // Live terminal-window mirror controls. Frames arrive as raw binary, not
-  // through these JSON builders; typing reuses text/key/chord above.
-  mstart: () => ({ t: "mstart" }),
-  mstop: () => ({ t: "mstop" }),
-  mfocus: () => ({ t: "mfocus" }),
+  // tmux terminal bridge. Output arrives as raw binary frames; keystrokes go
+  // back as raw binary too (not through these JSON builders).
+  tlist: () => ({ t: "tlist" }),
+  tsel: (id: string) => ({ t: "tsel", id }),
 };

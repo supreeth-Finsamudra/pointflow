@@ -1,42 +1,66 @@
 "use client";
 
 // WebSocket connection to the agent: pairs with the token from the URL, exposes
-// a stable `send`, and auto-reconnects. Binary frames are live JPEG snapshots
-// of the Mac's active terminal window (the screen mirror); JSON text carries
-// the auth handshake.
+// a stable `send`, and auto-reconnects. For the tmux terminal bridge: binary
+// frames are the selected pane's output (snapshot + live), `{t:"panes"}` carries
+// the shell list, and keystrokes go back as raw binary.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Send, msg } from "./protocol";
 
 export type Status = "connecting" | "connected" | "denied" | "disconnected";
 
-export type FrameHandler = (jpeg: ArrayBuffer) => void;
+export type PaneInfo = {
+  id: string;
+  label: string;
+  cmd: string;
+  active: boolean;
+  w: number;
+  h: number;
+};
+
+export type OutputHandler = (bytes: ArrayBuffer) => void;
+export type PanesHandler = (panes: PaneInfo[]) => void;
 
 export type Agent = {
   status: Status;
   send: Send;
-  /**
-   * Register a sink for live mirror frames (JPEG bytes). Returns an
-   * unsubscribe function. Only the latest frame matters, so there's no replay.
-   */
-  onFrame: (handler: FrameHandler) => () => void;
+  /** Send raw key bytes to the selected tmux pane. */
+  sendBytes: (bytes: Uint8Array) => void;
+  /** Register a sink for the selected pane's output bytes. */
+  onOutput: (handler: OutputHandler) => () => void;
+  /** Register a handler for the tmux pane list. */
+  onPanes: (handler: PanesHandler) => () => void;
 };
 
 export function useAgent(): Agent {
   const [status, setStatus] = useState<Status>("connecting");
   const wsRef = useRef<WebSocket | null>(null);
   const tokenRef = useRef<string>("");
-  const frameHandlerRef = useRef<FrameHandler | null>(null);
+  const outRef = useRef<OutputHandler | null>(null);
+  const panesRef = useRef<PanesHandler | null>(null);
 
   const send = useCallback<Send>((obj) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }, []);
 
-  const onFrame = useCallback((handler: FrameHandler) => {
-    frameHandlerRef.current = handler;
+  const sendBytes = useCallback((bytes: Uint8Array) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(bytes);
+  }, []);
+
+  const onOutput = useCallback((handler: OutputHandler) => {
+    outRef.current = handler;
     return () => {
-      if (frameHandlerRef.current === handler) frameHandlerRef.current = null;
+      if (outRef.current === handler) outRef.current = null;
+    };
+  }, []);
+
+  const onPanes = useCallback((handler: PanesHandler) => {
+    panesRef.current = handler;
+    return () => {
+      if (panesRef.current === handler) panesRef.current = null;
     };
   }, []);
 
@@ -61,11 +85,12 @@ export function useAgent(): Agent {
             const m = JSON.parse(ev.data);
             if (m.t === "ok") setStatus("connected");
             else if (m.t === "denied") setStatus("denied");
+            else if (m.t === "panes") panesRef.current?.(m.panes ?? []);
           } catch {
             /* ignore */
           }
         } else if (ev.data instanceof ArrayBuffer) {
-          frameHandlerRef.current?.(ev.data);
+          outRef.current?.(ev.data);
         }
       };
       ws.onclose = () => {
@@ -84,5 +109,5 @@ export function useAgent(): Agent {
     };
   }, []);
 
-  return { status, send, onFrame };
+  return { status, send, sendBytes, onOutput, onPanes };
 }

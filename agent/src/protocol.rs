@@ -41,17 +41,12 @@ pub enum ClientMsg {
         mods: Vec<String>,
         key: String,
     },
-    /// Start mirroring the Mac's active terminal window to this phone. The
-    /// agent only captures/encodes while at least one phone is viewing.
-    #[serde(rename = "mstart")]
-    MirrorStart,
-    /// Stop mirroring (phone closed the terminal view).
-    #[serde(rename = "mstop")]
-    MirrorStop,
-    /// Bring the mirrored terminal app to the front, so typed keystrokes land
-    /// in it.
-    #[serde(rename = "mfocus")]
-    MirrorFocus,
+    /// Ask for the list of tmux panes (phone's shell picker).
+    #[serde(rename = "tlist")]
+    TmuxList,
+    /// Select a tmux pane to view/drive (by pane id, e.g. "%3").
+    #[serde(rename = "tsel")]
+    TmuxSelect { id: String },
     /// Keep-alive; no effect.
     Ping,
 }
@@ -82,9 +77,8 @@ impl ClientMsg {
         match self {
             ClientMsg::Auth { .. }
             | ClientMsg::Ping
-            | ClientMsg::MirrorStart
-            | ClientMsg::MirrorStop
-            | ClientMsg::MirrorFocus => None,
+            | ClientMsg::TmuxList
+            | ClientMsg::TmuxSelect { .. } => None,
             ClientMsg::Move { dx, dy } => Some(InputCmd::Move { dx, dy }),
             ClientMsg::Click { button, double } => Some(InputCmd::Click {
                 button: button.into(),

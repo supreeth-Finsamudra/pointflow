@@ -5,8 +5,8 @@
 //! input on this Mac. Requires Accessibility permission.
 
 mod input;
-mod mirror;
 mod protocol;
+mod tmux;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -28,8 +28,8 @@ use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 
 use input::InputCmd;
-use mirror::Mirror;
 use protocol::ClientMsg;
+use tmux::Tmux;
 
 /// Default listen port. Override with POINTFLOW_PORT.
 const DEFAULT_PORT: u16 = 8742;
@@ -38,8 +38,8 @@ const DEFAULT_PORT: u16 = 8742;
 struct AppState {
     token: String,
     tx: Sender<InputCmd>,
-    /// Live mirror of the Mac's active terminal window, streamed to phones.
-    mirror: Arc<Mirror>,
+    /// Bridge to the user's tmux panes (list, view, drive).
+    tmux: Arc<Tmux>,
 }
 
 #[tokio::main]
@@ -67,9 +67,8 @@ async fn main() {
     let (tx, rx) = crossbeam_channel::unbounded::<InputCmd>();
     std::thread::spawn(move || input::run(rx));
 
-    // Captures the active terminal window on demand and streams it to phones.
-    // Idles cheaply until a phone opens the mirror.
-    let mirror = Mirror::start();
+    // Bridge to tmux for viewing/driving the user's shells.
+    let tmux = Tmux::new();
 
     let web_dir = resolve_web_dir();
     let serve_dir = ServeDir::new(&web_dir).append_index_html_on_directories(true);
@@ -77,7 +76,7 @@ async fn main() {
     let state = AppState {
         token: token.clone(),
         tx,
-        mirror,
+        tmux,
     };
 
     let app = Router::new()
@@ -127,23 +126,25 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let _ = socket.send(Message::Text("{\"t\":\"ok\"}".to_string())).await;
     println!("[pointflow] phone connected");
 
-    // Bidirectional from here: one half streams the mirrored terminal window
-    // to the phone as JPEG frames, the other routes the phone's messages.
+    // Bidirectional from here. All agent→phone messages funnel through one
+    // mpsc so both the tmux output stream (binary) and the panes list (text)
+    // share the single sink.
     let (mut sink, mut stream) = socket.split();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
-    // Send half: forward live capture frames as binary. Frames only arrive
-    // while this phone has the mirror started (viewers > 0).
-    let send_task = {
-        let mut frames = state.mirror.subscribe();
+    // Pump the selected pane's output (snapshot + live) to the phone as binary.
+    let pump = {
+        let mut frames = state.tmux.subscribe();
+        let out_tx = out_tx.clone();
         tokio::spawn(async move {
             loop {
                 match frames.recv().await {
-                    Ok(jpeg) => {
-                        if sink.send(Message::Binary(jpeg)).await.is_err() {
+                    Ok(bytes) => {
+                        if out_tx.send(Message::Binary(bytes)).is_err() {
                             break;
                         }
                     }
-                    // A slow phone fell behind; resume from the latest frame.
+                    // A slow phone fell behind; resume from the latest output.
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -151,27 +152,27 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         })
     };
 
-    // Recv half: mirror control toggles capture; everything else is input that
-    // flows to the engine and drives the real (focused) terminal.
-    let mut mirroring = false;
+    // Drain the outgoing queue to the socket.
+    let send_task = tokio::spawn(async move {
+        while let Some(msg) = out_rx.recv().await {
+            if sink.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Recv half: binary frames are keystrokes for the selected pane; JSON text
+    // is tmux control or input that drives the Mac via the engine.
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
+            Message::Binary(b) => state.tmux.send_keys(&b),
             Message::Text(t) => {
                 if let Ok(m) = serde_json::from_str::<ClientMsg>(&t) {
                     match m {
-                        ClientMsg::MirrorStart => {
-                            if !mirroring {
-                                state.mirror.add_viewer();
-                                mirroring = true;
-                            }
+                        ClientMsg::TmuxList => {
+                            let _ = out_tx.send(Message::Text(state.tmux.panes_json()));
                         }
-                        ClientMsg::MirrorStop => {
-                            if mirroring {
-                                state.mirror.remove_viewer();
-                                mirroring = false;
-                            }
-                        }
-                        ClientMsg::MirrorFocus => state.mirror.focus(),
+                        ClientMsg::TmuxSelect { id } => state.tmux.select(&id),
                         // Channel send only fails if the input thread died.
                         other => {
                             if let Some(cmd) = other.into_cmd() {
@@ -186,9 +187,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         }
     }
 
-    if mirroring {
-        state.mirror.remove_viewer();
-    }
+    state.tmux.stop();
+    pump.abort();
     send_task.abort();
     println!("[pointflow] phone disconnected");
 }

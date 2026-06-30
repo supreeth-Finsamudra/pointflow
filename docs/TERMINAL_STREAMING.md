@@ -1,79 +1,87 @@
-# Terminal streaming (live window mirror)
+# Terminal streaming (tmux bridge)
 
-See and drive whatever is **already running** in your Mac's terminal — Claude
-Code included — from your phone. The phone shows a live picture of your real
-terminal window and types into it through the input path PointFlow already has.
-No new shell, no cloud.
+See and drive **all your running shells** from your phone: list every tmux pane,
+pick one, read its **full colored scrollback**, scroll its history, and **type
+into it** — even when it isn't the focused window. Crisp text, no cloud, and
+**no Screen Recording or Accessibility permission**.
 
-## Why a window mirror (not a PTY)
+## Why tmux
 
-An earlier approach spawned its own PTY shell, but that's a *separate* process —
-it can't show the terminal (and Claude Code session) you already have open. To
-mirror "whatever is running," the agent captures your actual terminal **window**
-and streams it; typing reuses the existing keystroke injection so it lands in
-the real, focused terminal.
+A screenshot can't give you scrollback, selectable text, or easy multi-shell
+switching — it's just the visible pixels of one window. And macOS exposes no API
+to read an arbitrary terminal's text buffer. tmux is the one clean way in: it
+already owns the shells' text, history, and input, so a handful of `tmux`
+commands deliver everything:
 
-Tradeoff: it's video (JPEG frames), so it needs **Screen Recording** permission
-and is heavier than text. The win: zero workflow change — keep using
-Terminal.app/iTerm and Claude Code exactly as you do now.
+| Requirement | tmux command |
+| --- | --- |
+| List all shells | `list-panes -a` |
+| Pick one | target any `#{pane_id}` |
+| Text **with color** | `capture-pane -e` |
+| **Full** scrollback | `capture-pane -S -` |
+| Type into it (unfocused ok) | `send-keys -H` (raw hex bytes) |
+| Live output | `pipe-pane` → tail |
+
+The tradeoff: the shells must run **inside tmux** (incl. Claude Code). Anything
+in tmux is fully phone-accessible; a plain window opened outside tmux isn't.
 
 ## Architecture
 
 ```
-            JPEG frames (active terminal window)
-  [ Mac agent ] ───────────────────────────────► [ phone: <img> mirror ]
-   • xcap capture  ◄──── text / key / chord ─────   • zoom + pan
-   • JPEG encode        (existing injection)         • quick keys + type bar
-   • input injection ──► drives the REAL terminal    • Focus button
+            {t:"panes",[…]}            select  →  capture-pane -S -e  (snapshot)
+  [ phone ] ───────────────► [ agent ] ─────────► pipe-pane → tail   (live)
+   xterm.js  ◄── binary (pane output) ──            send-keys -H     (your keys)
+   pane list ─── binary (keystrokes) ──►
 ```
 
-- **Capture** (`agent/src/mirror.rs`): a background thread picks the focused (or
-  front-most) terminal window via `xcap` — which uses macOS **ScreenCaptureKit**
-  under the hood — captures it, downscales to ≤1280 px wide, JPEG-encodes
-  (q=70), and broadcasts the frame. Runs ~10 fps, and **only while a phone is
-  viewing** (a viewer counter gates capture so it idles cheaply otherwise).
-- **Transport**: frames go over the existing token-paired WebSocket as **binary**
-  frames. JSON text still carries the auth handshake and all control/input.
-- **Typing**: the phone sends the same `text` / `key` / `chord` messages the
-  trackpad keyboard uses; they inject into the focused app — i.e. the terminal
-  being mirrored. `mfocus` brings that terminal to the front so keystrokes land.
-- **Untouched**: the trackpad/keyboard injection path (`input.rs`) is unchanged;
-  the mirror only *adds* the picture.
+- `agent/src/tmux.rs` shells out to `tmux` (found at `/opt/homebrew/bin/tmux`
+  even under a minimal PATH). It tracks one **selected pane**:
+  - `panes_json()` → `list-panes -a` formatted to JSON for the picker.
+  - `select(id)` → `capture-pane -p -e -S -` broadcast as the **snapshot**, then
+    `pipe-pane -O … 'cat >> tmpfile'` + a `tail -F` thread broadcast as **live**.
+  - `send_keys(bytes)` → `send-keys -t id -H <hex…>`, so every key (text,
+    arrows, Ctrl-C) round-trips byte-exact.
+- The WebSocket multiplexes one sink: **binary** frames are pane output (agent→
+  phone) and keystrokes (phone→agent); **JSON text** carries `tlist`/`tsel` and
+  the `panes` reply. The mouse/keyboard injection path is untouched.
 
 ## Wire protocol (additions)
 
 | Direction | Frame | Meaning |
 | --- | --- | --- |
-| agent → phone | **binary** | one JPEG frame of the active terminal window |
-| agent → phone | text `{"t":"ok"\|"denied"}` | existing auth handshake |
-| phone → agent | text `{"t":"mstart"}` | start mirroring (increments viewers) |
-| phone → agent | text `{"t":"mstop"}` | stop mirroring |
-| phone → agent | text `{"t":"mfocus"}` | bring the mirrored terminal to front |
-| phone → agent | text `{"t":"text"\|"key"\|"chord",…}` | inject into the real terminal |
+| phone → agent | `{"t":"tlist"}` | request the pane list |
+| phone → agent | `{"t":"tsel","id":"%3"}` | select a pane to view/drive |
+| phone → agent | **binary** | raw key bytes → `send-keys` on the selected pane |
+| agent → phone | `{"t":"panes","panes":[…]}` | pane list |
+| agent → phone | **binary** | selected pane's output (snapshot, then live) |
 
 ## Phone UX
 
-- A `>_` button in the status bar opens a full-screen mirror sheet.
-- The live window renders into an `<img>`; **zoom −/+** and scroll-to-pan let you
-  read small text. The sheet height tracks the visual viewport so the type bar
-  stays above the on-screen keyboard.
-- A **type bar** (reused from the trackpad) injects what you type/dictate; a
-  **quick-key row** sends Esc / Tab / arrows / ⌃C for Claude Code's prompts.
-- A **Focus** button re-fronts the terminal if focus drifted.
+- The `>_` button opens a **shell picker** (every pane, with its command + size).
+- Tap a pane → it opens in **xterm.js** (the renderer registers *before* `tsel`
+  so the scrollback snapshot isn't missed). Full history is scrollable; **−/+**
+  zoom (CSS scale) + scroll to pan for wide panes.
+- A **type bar** (diff-based, so dictation/autocorrect work) and a **quick-key
+  row** (Esc · Tab · ⏎ · arrows · ⌃C) send raw bytes to the pane.
+- Sheet height tracks the visual viewport so the type bar stays above the
+  keyboard. Reconnects re-select the pane automatically.
 
-## Permission
+## Using it
 
-First capture needs **Screen Recording**: System Settings → Privacy & Security →
-Screen Recording → enable the app that launched the agent (Terminal/iTerm),
-then restart the agent. Until granted, window enumeration returns nothing and
-the phone shows a "waiting for your terminal" hint.
+```bash
+# on the Mac, inside a tmux session:
+tmux new -s work
+claude            # (or anything) — now visible/drivable from the phone
+```
+
+Run the agent (`cd agent && cargo run`), open the QR URL on your phone, tap
+`>_`, pick the `work` pane.
 
 ## Status / follow-ups
 
-- MVP: mirrors the focused/front-most terminal; last-writer-wins for multiple
-  phones; ~10 fps JPEG.
-- Possible later: H.264/VideoToolbox for smoother/cheaper streaming; let the
-  phone pick which window from a list; map two-finger swipe to inject scroll for
-  terminal scrollback; tap-on-image → click via coordinate mapping.
-- The previous PTY implementation is kept (uncompiled) in `agent/src/term.rs`
-  for a future opt-in "PointFlow shell"/tmux mode.
+- One selected pane at a time; last-writer-wins for multiple phones.
+- Snapshot (rendered history) + live (raw stream) can have a small seam at the
+  boundary; TUIs that repaint (Claude Code) reconcile on their next draw.
+- The previous PTY shell lives (uncompiled) in `agent/src/term.rs` for a future
+  opt-in mode; the screen-capture mirror was removed (couldn't do scrollback or
+  text and was slow on macOS 26).

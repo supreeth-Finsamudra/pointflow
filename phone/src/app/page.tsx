@@ -20,7 +20,7 @@ export default function Page() {
 }
 
 function App() {
-  const { status, send, onFrame } = useAgent();
+  const { status, send, sendBytes, onOutput, onPanes } = useAgent();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [termOpen, setTermOpen] = useState(false);
 
@@ -41,8 +41,11 @@ function App() {
       {termOpen && (
         <TerminalSheet
           onClose={() => setTermOpen(false)}
+          status={status}
           send={send}
-          onFrame={onFrame}
+          sendBytes={sendBytes}
+          onOutput={onOutput}
+          onPanes={onPanes}
         />
       )}
     </main>
