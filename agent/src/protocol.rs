@@ -41,6 +41,13 @@ pub enum ClientMsg {
         mods: Vec<String>,
         key: String,
     },
+    /// Terminal keystrokes as a string (binary frames are preferred, but this
+    /// is accepted as a JSON fallback). Routed to the PTY, not `enigo`.
+    #[serde(rename = "tin")]
+    TermInput { s: String },
+    /// Resize the streamed terminal's PTY to the phone's viewport.
+    #[serde(rename = "tresize")]
+    TermResize { cols: u16, rows: u16 },
     /// Keep-alive; no effect.
     Ping,
 }
@@ -69,7 +76,10 @@ impl ClientMsg {
     /// Returns `None` for `Auth`/`Ping` (no input action) or unparseable keys.
     pub fn into_cmd(self) -> Option<InputCmd> {
         match self {
-            ClientMsg::Auth { .. } | ClientMsg::Ping => None,
+            ClientMsg::Auth { .. }
+            | ClientMsg::Ping
+            | ClientMsg::TermInput { .. }
+            | ClientMsg::TermResize { .. } => None,
             ClientMsg::Move { dx, dy } => Some(InputCmd::Move { dx, dy }),
             ClientMsg::Click { button, double } => Some(InputCmd::Click {
                 button: button.into(),

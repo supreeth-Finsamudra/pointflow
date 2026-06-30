@@ -19,4 +19,7 @@ export const msg = {
   text: (s: string) => ({ t: "text", s }),
   key: (k: string) => ({ t: "key", k }),
   chord: (mods: string[], key: string) => ({ t: "chord", mods, key }),
+  // Resize the streamed terminal's PTY to the phone's viewport. Terminal
+  // keystrokes and output ride raw binary frames, not these JSON builders.
+  tresize: (cols: number, rows: number) => ({ t: "tresize", cols, rows }),
 };

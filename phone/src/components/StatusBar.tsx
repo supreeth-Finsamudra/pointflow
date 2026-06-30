@@ -19,9 +19,11 @@ const DOT: Record<Status, string> = {
 export function StatusBar({
   status,
   onSettings,
+  onTerminal,
 }: {
   status: Status;
   onSettings: () => void;
+  onTerminal: () => void;
 }) {
   return (
     <div className="flex items-center justify-between rounded-xl bg-white/5 px-4 py-2 text-sm">
@@ -31,6 +33,14 @@ export function StatusBar({
           <span className={`h-2 w-2 rounded-full ${DOT[status]}`} />
           {LABEL[status]}
         </span>
+        <button
+          type="button"
+          aria-label="Terminal"
+          onClick={onTerminal}
+          className="select-none rounded-lg bg-emerald-400/10 px-2 py-0.5 font-mono text-sm leading-none text-emerald-300/90 active:bg-emerald-400/20"
+        >
+          {">_"}
+        </button>
         <button
           type="button"
           aria-label="Settings"

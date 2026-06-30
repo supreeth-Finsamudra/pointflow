@@ -5,6 +5,7 @@ import { ControlButtons } from "../components/ControlButtons";
 import { ScrollStrip } from "../components/ScrollStrip";
 import { SettingsSheet } from "../components/SettingsSheet";
 import { StatusBar } from "../components/StatusBar";
+import { TerminalSheet } from "../components/TerminalSheet";
 import { TextBar } from "../components/TextBar";
 import { Trackpad } from "../components/Trackpad";
 import { SettingsProvider } from "../lib/settings";
@@ -19,12 +20,17 @@ export default function Page() {
 }
 
 function App() {
-  const { status, send } = useAgent();
+  const { status, send, sendBytes, sendResize, onTerm } = useAgent();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [termOpen, setTermOpen] = useState(false);
 
   return (
     <main className="flex h-dvh flex-col gap-3 p-3">
-      <StatusBar status={status} onSettings={() => setSettingsOpen(true)} />
+      <StatusBar
+        status={status}
+        onSettings={() => setSettingsOpen(true)}
+        onTerminal={() => setTermOpen(true)}
+      />
       <div className="flex min-h-0 flex-1 gap-3">
         <Trackpad send={send} />
         <ScrollStrip send={send} />
@@ -32,6 +38,14 @@ function App() {
       <ControlButtons send={send} />
       <TextBar send={send} />
       <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {termOpen && (
+        <TerminalSheet
+          onClose={() => setTermOpen(false)}
+          sendBytes={sendBytes}
+          sendResize={sendResize}
+          onTerm={onTerm}
+        />
+      )}
     </main>
   );
 }
