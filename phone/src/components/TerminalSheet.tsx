@@ -694,7 +694,8 @@ function PaneView({
 /** Compose-then-send input: the phone keyboard's return key makes a NEW LINE
  *  in the draft (nothing is streamed live — what you see here is exactly what
  *  hasn't been sent yet); only the ⏎ button sends. Sending with an empty
- *  draft just presses Enter, handy for confirming prompts. */
+ *  draft just presses Enter, handy for confirming prompts. The ↺ button
+ *  cycles previously sent prompts into the box for editing/resending. */
 function ComposeBar({
   draft,
   setDraft,
@@ -704,9 +705,43 @@ function ComposeBar({
   setDraft: (v: string) => void;
   onSend: (text: string) => void;
 }) {
+  const histIdx = useRef(0);
+  const lastRecall = useRef<string | null>(null);
   const rows = Math.min(5, Math.max(1, draft.split("\n").length));
+
+  const recall = async () => {
+    const { loadHistory } = await import("../lib/history");
+    const hist = loadHistory();
+    if (hist.length === 0) return;
+    // Fresh cycle unless the box still shows the last recalled prompt.
+    histIdx.current =
+      draft === lastRecall.current
+        ? (histIdx.current + 1) % hist.length
+        : 0;
+    lastRecall.current = hist[histIdx.current];
+    setDraft(hist[histIdx.current]);
+  };
+
+  const submit = async () => {
+    if (draft.trim()) {
+      const { pushHistory } = await import("../lib/history");
+      pushHistory(draft);
+    }
+    onSend(draft);
+    setDraft("");
+    lastRecall.current = null;
+  };
+
   return (
     <div className="flex items-end gap-2">
+      <button
+        type="button"
+        aria-label="Previous prompt"
+        onClick={recall}
+        className="pf-press flex min-h-11 w-10 shrink-0 select-none items-center justify-center rounded-xl border border-white/10 bg-white/[0.06] text-base text-white/70"
+      >
+        ↺
+      </button>
       <textarea
         rows={rows}
         value={draft}
@@ -719,10 +754,7 @@ function ComposeBar({
       />
       <button
         type="button"
-        onClick={() => {
-          onSend(draft);
-          setDraft("");
-        }}
+        onClick={submit}
         className="pf-press pf-accent min-h-11 select-none rounded-xl px-4 font-semibold"
       >
         ⏎
