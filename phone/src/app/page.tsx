@@ -9,6 +9,12 @@ import { StatusBar } from "../components/StatusBar";
 import { TerminalSheet } from "../components/TerminalSheet";
 import { TextBar } from "../components/TextBar";
 import { Trackpad } from "../components/Trackpad";
+import {
+  enablePush,
+  getPushState,
+  registerSW,
+  type PushState,
+} from "../lib/push";
 import { SettingsProvider } from "../lib/settings";
 import { useAgent, type CopilotEvent } from "../lib/useAgent";
 
@@ -61,11 +67,33 @@ function App() {
     [onEvent],
   );
 
+  // Lock-screen push: register the SW, reflect state on the 🔔 button.
+  const [push, setPush] = useState<PushState>("unsupported");
+  useEffect(() => {
+    registerSW().then(() => getPushState().then(setPush));
+  }, []);
+  const onPush = async () => {
+    if (push === "needs-install") {
+      alert(
+        "To get lock-screen notifications on iPhone:\n\n1. Tap Share → Add to Home Screen\n2. Open PointFlow from the new icon\n3. Tap 🔕 again",
+      );
+      return;
+    }
+    if (push === "denied") {
+      alert("Notifications are blocked for this site in Settings.");
+      return;
+    }
+    if (push === "on") return;
+    setPush(await enablePush());
+  };
+
   return (
     <main className="flex h-dvh flex-col gap-3 p-3">
       <StatusBar
         status={status}
         alert={event !== null}
+        push={push}
+        onPush={onPush}
         onSettings={() => setSettingsOpen(true)}
         onTerminal={() => {
           setJumpPane(null);

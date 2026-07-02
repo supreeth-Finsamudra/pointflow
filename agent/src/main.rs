@@ -7,6 +7,7 @@
 mod hooks;
 mod input;
 mod protocol;
+mod push;
 mod tabs;
 mod tmux;
 
@@ -33,6 +34,7 @@ use tower_http::services::ServeDir;
 
 use input::InputCmd;
 use protocol::ClientMsg;
+use push::Push;
 use tabs::Tabs;
 use tmux::Tmux;
 
@@ -50,6 +52,8 @@ struct AppState {
     events: broadcast::Sender<String>,
     /// Bridge to already-open Terminal.app tabs (no tmux required).
     tabs: Arc<Tabs>,
+    /// Web Push (lock-screen notifications). None if VAPID setup failed.
+    push: Option<Arc<Push>>,
 }
 
 #[tokio::main]
@@ -102,12 +106,16 @@ async fn main() {
         tmux,
         events,
         tabs,
+        push: Push::init().map(Arc::new),
     };
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/event", post(event_handler))
         .route("/upload", post(upload_handler))
+        .route("/push/key", get(push_key_handler))
+        .route("/push/subscribe", post(push_subscribe_handler))
+        .route("/manifest.webmanifest", get(manifest_handler))
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .fallback_service(serve_dir)
         .with_state(state);
@@ -179,16 +187,92 @@ async fn event_handler(
         state.tmux.pane_label(&pane)
     };
 
+    let label = label.unwrap_or_else(|| pane.clone());
     let event = serde_json::json!({
         "t": "event",
         "kind": kind,
         "pane": pane,
-        "label": label.unwrap_or_else(|| pane.clone()),
+        "label": label,
         "message": message,
     });
     println!("[pointflow] copilot event: {kind} pane={pane}");
     let _ = state.events.send(event.to_string());
+
+    // Also deliver as a lock-screen push (PWA over HTTPS); fire-and-forget.
+    if let Some(push) = state.push.clone() {
+        let title = if kind == "stop" {
+            "✓ Claude finished".to_string()
+        } else {
+            "✳ Claude needs you".to_string()
+        };
+        let body = if label.is_empty() {
+            message.clone()
+        } else {
+            format!("{message} — {label}")
+        };
+        tokio::spawn(async move { push.notify_all(&title, &body).await });
+    }
     StatusCode::NO_CONTENT
+}
+
+/// The applicationServerKey the phone needs to subscribe to push.
+async fn push_key_handler(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    if q.get("token") != Some(&state.token) {
+        return (StatusCode::UNAUTHORIZED, String::new());
+    }
+    match state.push.as_ref().and_then(|p| p.public_key()) {
+        Some(key) => (
+            StatusCode::OK,
+            serde_json::json!({ "key": key }).to_string(),
+        ),
+        None => (StatusCode::SERVICE_UNAVAILABLE, String::new()),
+    }
+}
+
+/// Stores the browser's PushSubscription (standard JSON shape).
+async fn push_subscribe_handler(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    body: String,
+) -> StatusCode {
+    if q.get("token") != Some(&state.token) {
+        return StatusCode::UNAUTHORIZED;
+    }
+    let Some(push) = &state.push else {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    };
+    match serde_json::from_str::<web_push::SubscriptionInfo>(&body) {
+        Ok(sub) => {
+            push.subscribe(sub);
+            StatusCode::NO_CONTENT
+        }
+        Err(_) => StatusCode::BAD_REQUEST,
+    }
+}
+
+/// PWA manifest, served dynamically so the installed app's start_url carries
+/// the session token (an installed icon opens pre-authenticated).
+async fn manifest_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let manifest = serde_json::json!({
+        "name": "PointFlow",
+        "short_name": "PointFlow",
+        "description": "Your phone as trackpad, keyboard and Claude Code remote for your Mac.",
+        "start_url": format!("/?token={}", state.token),
+        "display": "standalone",
+        "background_color": "#050508",
+        "theme_color": "#050508",
+        "icons": [
+            { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+            { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+        ]
+    });
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/manifest+json")],
+        manifest.to_string(),
+    )
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {

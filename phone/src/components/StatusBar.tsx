@@ -1,5 +1,6 @@
 "use client";
 
+import type { PushState } from "../lib/push";
 import type { Status } from "../lib/useAgent";
 
 const LABEL: Record<Status, string> = {
@@ -19,14 +20,19 @@ const DOT: Record<Status, string> = {
 export function StatusBar({
   status,
   alert = false,
+  push = "unsupported",
   onSettings,
   onTerminal,
+  onPush,
 }: {
   status: Status;
   /** A Copilot event is pending — badge the terminal button. */
   alert?: boolean;
+  /** Lock-screen push state; the 🔔 hides when unsupported. */
+  push?: PushState;
   onSettings: () => void;
   onTerminal: () => void;
+  onPush?: () => void;
 }) {
   return (
     <div className="pf-glass flex items-center justify-between rounded-2xl px-4 py-2.5 text-sm">
@@ -38,6 +44,22 @@ export function StatusBar({
           <span className={`h-2 w-2 rounded-full ${DOT[status]}`} />
           {LABEL[status]}
         </span>
+        {push !== "unsupported" && (
+          <button
+            type="button"
+            aria-label="Notifications"
+            onClick={onPush}
+            className={`pf-press select-none rounded-xl border px-2 py-1 text-sm leading-none ${
+              push === "on"
+                ? "border-emerald-300/25 bg-emerald-400/15 text-emerald-300"
+                : push === "denied"
+                  ? "border-red-400/25 bg-red-500/10 text-red-300/70"
+                  : "border-white/10 bg-white/[0.06] text-white/50"
+            }`}
+          >
+            {push === "on" ? "🔔" : "🔕"}
+          </button>
+        )}
         <button
           type="button"
           aria-label="Terminal"

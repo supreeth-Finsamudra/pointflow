@@ -50,12 +50,26 @@ deleting the two entries containing `.pointflow/token`, or restore the backup.
 - Android phones vibrate on arrival (iOS Safari has no vibration API; the card
   itself is the signal there).
 
+## Lock-screen push (PWA)
+
+Real notifications with the app closed and the phone locked:
+
+1. Start the agent with the tunnel: `cargo run -- --tunnel` (push needs HTTPS).
+2. Open the **✦ public URL** on the phone → Share → **Add to Home Screen**
+   (iOS requires an installed PWA for push; the app icon opens
+   pre-authenticated — the manifest bakes the session token into `start_url`).
+3. Open PointFlow from the icon → tap **🔕** in the status bar → allow.
+
+From then on every hook event is *also* delivered as an encrypted Web Push:
+the agent keeps VAPID keys in `~/.pointflow/vapid.pem`, device subscriptions
+in `~/.pointflow/push.json` (expired ones are pruned automatically), and
+`/push/key` + `/push/subscribe` are token-gated. Tapping the notification
+opens/focuses the app, which restores the shell you were in.
+
 ## Caveats (v1)
 
-- The phone page must be open (foreground or briefly backgrounded) to receive
-  cards — true lock-screen push needs HTTPS + an installed PWA, which plain
-  LAN HTTP can't provide. Running the agent behind an HTTPS tunnel (see
-  "Remote access" in the README) is the path to real push later.
+- Without the PWA/push setup above, cards arrive only while the page is open
+  (LAN http:// has no secure context, so 🔔 shows the install hint instead).
 - Approve sends Enter = Claude's default choice ("Yes"). For the other options
   ("don't ask again", numbered choices), tap **Open shell** and answer there.
 - Events outside tmux still show a card (no pane → no Approve/Open buttons).

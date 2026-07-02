@@ -4,6 +4,13 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "PointFlow",
   description: "Your phone as a trackpad and keyboard for your Mac.",
+  manifest: "/manifest.webmanifest",
+  icons: { apple: "/apple-touch-icon.png" },
+  appleWebApp: {
+    capable: true,
+    title: "PointFlow",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {
@@ -12,7 +19,7 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
-  themeColor: "#0a0a0a",
+  themeColor: "#050508",
 };
 
 export default function RootLayout({

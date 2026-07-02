@@ -124,7 +124,13 @@ export function useAgent(): Agent {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    tokenRef.current = params.get("token") ?? "";
+    const fromUrl = params.get("token");
+    try {
+      if (fromUrl) localStorage.setItem("pf.token", fromUrl);
+      tokenRef.current = fromUrl ?? localStorage.getItem("pf.token") ?? "";
+    } catch {
+      tokenRef.current = fromUrl ?? "";
+    }
 
     let closed = false;
     let retry: ReturnType<typeof setTimeout> | undefined;

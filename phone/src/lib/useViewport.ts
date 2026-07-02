@@ -31,8 +31,18 @@ export function useVisibleViewport(): { h: number | null; top: number } {
   return { h, top };
 }
 
-/** Session token from the pairing URL (used by uploads). */
+/** Session token from the pairing URL, persisted so reloads and the
+ *  installed-PWA launch (whose URL may lose the query) stay authenticated. */
 export function getToken(): string {
   if (typeof window === "undefined") return "";
-  return new URLSearchParams(window.location.search).get("token") ?? "";
+  const fromUrl = new URLSearchParams(window.location.search).get("token");
+  try {
+    if (fromUrl) {
+      localStorage.setItem("pf.token", fromUrl);
+      return fromUrl;
+    }
+    return localStorage.getItem("pf.token") ?? "";
+  } catch {
+    return fromUrl ?? "";
+  }
 }
