@@ -87,8 +87,8 @@ export function TerminalSheet({
 }: Props) {
   const [panes, setPanes] = useState<PaneInfo[] | null>(null);
   const [tabs, setTabs] = useState<TabInfo[] | null>(null);
-  const [selectedTab, setSelectedTab] = useState<TabInfo | null>(null);
-  const [selected, setSelected] = useState<PaneInfo | null>(
+  const [selectedTab, setSelectedTabState] = useState<TabInfo | null>(null);
+  const [selected, setSelectedState] = useState<PaneInfo | null>(
     initialPane
       ? {
           id: initialPane.id,
@@ -100,6 +100,35 @@ export function TerminalSheet({
         }
       : null,
   );
+
+  // Persist which shell is open, so a Safari page eviction (switching apps)
+  // restores you straight back into it.
+  const setSelected = (p: PaneInfo | null) => {
+    setSelectedState(p);
+    try {
+      if (p) sessionStorage.setItem("pf.sel", JSON.stringify({ kind: "pane", pane: p }));
+      else sessionStorage.removeItem("pf.sel");
+    } catch {}
+  };
+  const setSelectedTab = (t: TabInfo | null) => {
+    setSelectedTabState(t);
+    try {
+      if (t) sessionStorage.setItem("pf.sel", JSON.stringify({ kind: "tab", tab: t }));
+      else sessionStorage.removeItem("pf.sel");
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (initialPane) return; // explicit jump (Copilot card) wins over restore
+    try {
+      const raw = sessionStorage.getItem("pf.sel");
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (s.kind === "pane" && s.pane) setSelectedState(s.pane);
+      else if (s.kind === "tab" && s.tab) setSelectedTabState(s.tab);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const offPanes = onPanes(setPanes);
@@ -142,6 +171,7 @@ export function TerminalSheet({
     return (
       <TabView
         tab={selectedTab}
+        status={status}
         send={send}
         onTabText={onTabText}
         onBack={() => setSelectedTab(null)}
@@ -295,12 +325,14 @@ function PaneList({
  *  focused on the Mac, so typing (TextBar/keys) uses the injection path. */
 function TabView({
   tab,
+  status,
   send,
   onTabText,
   onBack,
   onClose,
 }: {
   tab: TabInfo;
+  status: Status;
   send: Send;
   onTabText: (h: TabTextHandler) => () => void;
   onBack: () => void;
@@ -310,6 +342,10 @@ function TabView({
   const [screen, setScreen] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  // Skip the reconnect effect's first firing only when we mounted already
+  // connected (the mount effect selected the tab); after a real reconnect —
+  // or a restore-on-reload that mounted before the socket opened — re-select.
+  const skipNextConnect = useRef(status === "connected");
 
   useEffect(() => {
     const off = onTabText((kind, text) => {
@@ -322,6 +358,16 @@ function TabView({
       send(msg.tabstop());
     };
   }, [tab, send, onTabText]);
+
+  // Re-select after the socket comes back (app switch, network blip).
+  useEffect(() => {
+    if (status !== "connected") return;
+    if (skipNextConnect.current) {
+      skipNextConnect.current = false;
+      return;
+    }
+    send(msg.tabsel(tab.win, tab.tab));
+  }, [status, tab, send]);
 
   // Keep pinned to the bottom unless the user scrolled up to read history.
   useEffect(() => {
@@ -425,7 +471,10 @@ function PaneView({
   const termRef = useRef<any>(null);
   const fitRef = useRef<(() => void) | null>(null);
   const [font, setFont] = useState(12);
-  const sawConnected = useRef(false);
+  // See TabView: skip the first "connected" only if we mounted already
+  // connected; a restore-on-reload mounts before the socket opens and needs
+  // that first firing to actually attach.
+  const skipNextConnect = useRef(status === "connected");
 
   // Font-size changes refit the grid and re-sync tmux to the new cols/rows.
   useEffect(() => {
@@ -500,16 +549,16 @@ function PaneView({
     };
   }, [pane, send, sendBytes, onOutput]);
 
-  // Re-attach after a reconnect, but not on the initial connect (the effect
-  // above already attached).
+  // Re-attach after a reconnect (or the first connect when restored from a
+  // reload, where the mount-time attach was sent before the socket opened).
   useEffect(() => {
     if (status !== "connected") return;
-    if (sawConnected.current) {
-      const t = termRef.current;
-      send(msg.tsel(pane.id, t?.cols ?? 80, t?.rows ?? 24));
-    } else {
-      sawConnected.current = true;
+    if (skipNextConnect.current) {
+      skipNextConnect.current = false;
+      return;
     }
+    const t = termRef.current;
+    send(msg.tsel(pane.id, t?.cols ?? 80, t?.rows ?? 24));
   }, [status, pane.id, send]);
 
   return (

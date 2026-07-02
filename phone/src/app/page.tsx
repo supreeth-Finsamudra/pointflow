@@ -24,7 +24,26 @@ function App() {
   const { status, send, sendBytes, onOutput, onPanes, onEvent, onTabs, onTabText } =
     useAgent();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [termOpen, setTermOpen] = useState(false);
+  const [termOpen, setTermOpenState] = useState(false);
+
+  // Survive Safari evicting the page while you're in another app: remember
+  // that the terminal sheet was open and restore it on reload.
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem("pf.termOpen") === "1") setTermOpenState(true);
+    } catch {
+      /* private mode */
+    }
+  }, []);
+  const setTermOpen = (v: boolean) => {
+    setTermOpenState(v);
+    try {
+      if (v) sessionStorage.setItem("pf.termOpen", "1");
+      else sessionStorage.removeItem("pf.termOpen");
+    } catch {
+      /* private mode */
+    }
+  };
   const [event, setEvent] = useState<CopilotEvent | null>(null);
   // Pane to auto-open (set by a card's "Open shell"); keying the sheet on it
   // remounts straight into that pane.

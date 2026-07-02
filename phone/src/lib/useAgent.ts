@@ -164,9 +164,23 @@ export function useAgent(): Agent {
     };
 
     connect();
+
+    // iOS suspends timers and sockets in background tabs; when the user
+    // returns, reconnect immediately instead of waiting out the retry timer.
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState >= WebSocket.CLOSING) {
+        if (retry) clearTimeout(retry);
+        connect();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     return () => {
       closed = true;
       if (retry) clearTimeout(retry);
+      document.removeEventListener("visibilitychange", onVisible);
       wsRef.current?.close();
     };
   }, []);
