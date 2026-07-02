@@ -21,7 +21,6 @@ import type {
 } from "../lib/useAgent";
 import { useVisibleViewport } from "../lib/useViewport";
 import { PhotoButton } from "./PhotoButton";
-import { TextBar } from "./TextBar";
 
 type Props = {
   onClose: () => void;
@@ -32,6 +31,7 @@ type Props = {
   onPanes: (handler: PanesHandler) => () => void;
   onTabs: (handler: TabsHandler) => () => void;
   onTabText: (handler: TabTextHandler) => () => void;
+  onCreated: (handler: (p: { id: string; label: string }) => void) => () => void;
   /** Jump straight into this pane (from a Copilot card's "Open shell"). */
   initialPane?: { id: string; label: string } | null;
 };
@@ -89,6 +89,7 @@ export function TerminalSheet({
   onPanes,
   onTabs,
   onTabText,
+  onCreated,
   initialPane,
 }: Props) {
   const [panes, setPanes] = useState<PaneInfo[] | null>(null);
@@ -147,6 +148,23 @@ export function TerminalSheet({
     };
   }, [onPanes, onTabs, send]);
 
+  // A shell created via "+ New" opens itself the moment the agent reports it.
+  useEffect(
+    () =>
+      onCreated((p) =>
+        setSelected({
+          id: p.id,
+          label: p.label,
+          cmd: "",
+          active: false,
+          w: 0,
+          h: 0,
+        }),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onCreated],
+  );
+
   const refresh = () => {
     send(msg.tlist());
     send(msg.tablist());
@@ -190,6 +208,7 @@ export function TerminalSheet({
       panes={panes}
       tabs={tabs}
       onRefresh={refresh}
+      onNew={() => send(msg.tnew())}
       onPick={setSelected}
       onPickTab={setSelectedTab}
       onClose={onClose}
@@ -201,6 +220,7 @@ function PaneList({
   panes,
   tabs,
   onRefresh,
+  onNew,
   onPick,
   onPickTab,
   onClose,
@@ -208,6 +228,7 @@ function PaneList({
   panes: PaneInfo[] | null;
   tabs: TabInfo[] | null;
   onRefresh: () => void;
+  onNew: () => void;
   onPick: (p: PaneInfo) => void;
   onPickTab: (t: TabInfo) => void;
   onClose: () => void;
@@ -220,6 +241,13 @@ function PaneList({
             {">_ shells"}
           </span>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onNew}
+              className="pf-press pf-accent select-none rounded-xl px-3 py-1 text-sm font-semibold"
+            >
+              + New
+            </button>
             <HeaderBtn onPress={onRefresh}>↻</HeaderBtn>
             <HeaderBtn onPress={onClose}>Done</HeaderBtn>
           </div>
@@ -279,11 +307,9 @@ function PaneList({
             <p className="text-sm text-white/40">Loading…</p>
           ) : panes.length === 0 ? (
             <div className="pf-glass rounded-2xl px-4 py-3 text-sm leading-relaxed text-white/50">
-              None yet — for the crispest view (colors, live TUIs), run on the
-              Mac:
-              <pre className="mt-2 rounded-xl bg-black/40 px-3 py-2 font-mono text-xs text-emerald-300/80">
-                tmux new -s work{"\n"}claude
-              </pre>
+              None yet — tap <span className="text-emerald-300">+ New</span>{" "}
+              above to open one right from your phone (crispest view: colors,
+              live TUIs), then type <span className="font-mono">claude</span>.
             </div>
           ) : (
             <ul className="flex flex-col gap-2.5">
@@ -346,12 +372,27 @@ function TabView({
 }) {
   const [hist, setHist] = useState("");
   const [screen, setScreen] = useState("");
+  const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   // Skip the reconnect effect's first firing only when we mounted already
   // connected (the mount effect selected the tab); after a real reconnect —
   // or a restore-on-reload that mounted before the socket opened — re-select.
   const skipNextConnect = useRef(status === "connected");
+
+  // Send the composed draft into the tab. Inner newlines become Claude Code's
+  // backslash+Enter (line break without submitting); the final Enter submits.
+  const sendDraft = (text: string) => {
+    const lines = text.split("\n");
+    lines.forEach((line, i) => {
+      if (line) send(msg.text(line));
+      if (i < lines.length - 1) {
+        send(msg.text("\\"));
+        send(msg.key("enter"));
+      }
+    });
+    send(msg.key("enter"));
+  };
 
   useEffect(() => {
     const off = onTabText((kind, text) => {
@@ -428,11 +469,13 @@ function TabView({
           </KeyBtn>
         </div>
 
-        {/* photo + typing → injected into the focused tab */}
+        {/* photo lands in the compose box; ⏎ sends everything to the tab */}
         <div className="flex items-end gap-2 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-          <PhotoButton onPath={(path) => send(msg.text(`${path} `))} />
+          <PhotoButton
+            onPath={(path) => setDraft((d) => (d ? `${d} ${path} ` : `${path} `))}
+          />
           <div className="min-w-0 flex-1">
-            <TextBar send={send} />
+            <ComposeBar draft={draft} setDraft={setDraft} onSend={sendDraft} />
           </div>
         </div>
       </div>
@@ -473,10 +516,28 @@ function PaneView({
   const termRef = useRef<any>(null);
   const fitRef = useRef<(() => void) | null>(null);
   const [font, setFont] = useState(12);
+  const [draft, setDraft] = useState("");
   // See TabView: skip the first "connected" only if we mounted already
   // connected; a restore-on-reload mounts before the socket opens and needs
   // that first firing to actually attach.
   const skipNextConnect = useRef(status === "connected");
+
+  // Send the composed draft as a bracketed paste (TUIs like Claude Code treat
+  // pasted newlines as line breaks, not submissions), then Enter to submit.
+  const sendDraft = (text: string) => {
+    if (text) {
+      const enc = new TextEncoder();
+      const open = new Uint8Array([0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e]);
+      const close = new Uint8Array([0x1b, 0x5b, 0x32, 0x30, 0x31, 0x7e]);
+      const body = enc.encode(text);
+      const all = new Uint8Array(open.length + body.length + close.length);
+      all.set(open, 0);
+      all.set(body, open.length);
+      all.set(close, open.length + body.length);
+      sendBytes(all);
+    }
+    sendBytes(new Uint8Array([0x0d]));
+  };
 
   // Font-size changes refit the grid and re-sync tmux to the new cols/rows.
   useEffect(() => {
@@ -616,15 +677,13 @@ function PaneView({
           </div>
         </div>
 
-        {/* photo + type bar → raw bytes → the attached pane */}
+        {/* photo lands in the compose box; ⏎ pastes + submits to the pane */}
         <div className="flex items-end gap-2 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
           <PhotoButton
-            onPath={(path) =>
-              sendBytes(new TextEncoder().encode(`${path} `))
-            }
+            onPath={(path) => setDraft((d) => (d ? `${d} ${path} ` : `${path} `))}
           />
           <div className="min-w-0 flex-1">
-            <TypeBar sendBytes={sendBytes} />
+            <ComposeBar draft={draft} setDraft={setDraft} onSend={sendDraft} />
           </div>
         </div>
       </div>
@@ -632,53 +691,27 @@ function PaneView({
   );
 }
 
-/** Diff-based input so soft keyboards, autocorrect and dictation all turn into
- *  the right bytes streamed to the pane. */
-function TypeBar({ sendBytes }: { sendBytes: (b: Uint8Array) => void }) {
-  const last = useRef("");
-  const [value, setValue] = useState("");
-  const enc = useRef(new TextEncoder());
-
-  const diff = (next: string) => {
-    const prev = last.current;
-    if (next === prev) return;
-    let i = 0;
-    const max = Math.min(next.length, prev.length);
-    while (i < max && next[i] === prev[i]) i++;
-    for (let b = 0; b < prev.length - i; b++) sendBytes(new Uint8Array([0x7f]));
-    const typed = next.slice(i);
-    if (typed) sendBytes(enc.current.encode(typed));
-    last.current = next;
-  };
-
-  const submit = () => {
-    sendBytes(new Uint8Array([0x0d]));
-    last.current = "";
-    setValue("");
-  };
-
+/** Compose-then-send input: the phone keyboard's return key makes a NEW LINE
+ *  in the draft (nothing is streamed live — what you see here is exactly what
+ *  hasn't been sent yet); only the ⏎ button sends. Sending with an empty
+ *  draft just presses Enter, handy for confirming prompts. */
+function ComposeBar({
+  draft,
+  setDraft,
+  onSend,
+}: {
+  draft: string;
+  setDraft: (v: string) => void;
+  onSend: (text: string) => void;
+}) {
+  const rows = Math.min(5, Math.max(1, draft.split("\n").length));
   return (
     <div className="flex items-end gap-2">
       <textarea
-        rows={1}
-        value={value}
-        onChange={(e) => {
-          const v = e.target.value;
-          if (v.includes("\n")) {
-            diff(v.slice(0, v.indexOf("\n")));
-            submit();
-            return;
-          }
-          diff(v);
-          setValue(v);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-        placeholder="Type here → this shell"
+        rows={rows}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="Compose here · ⏎ sends"
         autoCapitalize="none"
         autoCorrect="off"
         spellCheck={false}
@@ -686,7 +719,10 @@ function TypeBar({ sendBytes }: { sendBytes: (b: Uint8Array) => void }) {
       />
       <button
         type="button"
-        onClick={submit}
+        onClick={() => {
+          onSend(draft);
+          setDraft("");
+        }}
         className="pf-press pf-accent min-h-11 select-none rounded-xl px-4 font-semibold"
       >
         ⏎

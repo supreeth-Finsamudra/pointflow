@@ -27,8 +27,17 @@ export default function Page() {
 }
 
 function App() {
-  const { status, send, sendBytes, onOutput, onPanes, onEvent, onTabs, onTabText } =
-    useAgent();
+  const {
+    status,
+    send,
+    sendBytes,
+    onOutput,
+    onPanes,
+    onEvent,
+    onTabs,
+    onTabText,
+    onCreated,
+  } = useAgent();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [termOpen, setTermOpenState] = useState(false);
 
@@ -128,6 +137,7 @@ function App() {
           onPanes={onPanes}
           onTabs={onTabs}
           onTabText={onTabText}
+          onCreated={onCreated}
           initialPane={jumpPane}
         />
       )}

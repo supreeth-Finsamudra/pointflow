@@ -49,6 +49,8 @@ export type EventHandler = (ev: CopilotEvent) => void;
 export type TabsHandler = (tabs: TabInfo[]) => void;
 /** kind: "hist" = one-time scrollback replay, "scr" = current screen. */
 export type TabTextHandler = (kind: "hist" | "scr", text: string) => void;
+/** Fires when a shell requested via tnew is ready. */
+export type CreatedHandler = (pane: { id: string; label: string }) => void;
 
 export type Agent = {
   status: Status;
@@ -65,6 +67,8 @@ export type Agent = {
   onTabs: (handler: TabsHandler) => () => void;
   /** Register a handler for a selected tab's text (history + screen). */
   onTabText: (handler: TabTextHandler) => () => void;
+  /** Register a handler for freshly created shells (tnew). */
+  onCreated: (handler: CreatedHandler) => () => void;
 };
 
 export function useAgent(): Agent {
@@ -76,6 +80,7 @@ export function useAgent(): Agent {
   const eventRef = useRef<EventHandler | null>(null);
   const tabsRef = useRef<TabsHandler | null>(null);
   const tabTextRef = useRef<TabTextHandler | null>(null);
+  const createdRef = useRef<CreatedHandler | null>(null);
 
   const send = useCallback<Send>((obj) => {
     const ws = wsRef.current;
@@ -122,6 +127,13 @@ export function useAgent(): Agent {
     };
   }, []);
 
+  const onCreated = useCallback((handler: CreatedHandler) => {
+    createdRef.current = handler;
+    return () => {
+      if (createdRef.current === handler) createdRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const fromUrl = params.get("token");
@@ -154,6 +166,7 @@ export function useAgent(): Agent {
             else if (m.t === "tabs") tabsRef.current?.(m.tabs ?? []);
             else if (m.t === "tabhist") tabTextRef.current?.("hist", m.text ?? "");
             else if (m.t === "tabscr") tabTextRef.current?.("scr", m.text ?? "");
+            else if (m.t === "tcreated") createdRef.current?.(m);
           } catch {
             /* ignore */
           }
@@ -191,5 +204,15 @@ export function useAgent(): Agent {
     };
   }, []);
 
-  return { status, send, sendBytes, onOutput, onPanes, onEvent, onTabs, onTabText };
+  return {
+    status,
+    send,
+    sendBytes,
+    onOutput,
+    onPanes,
+    onEvent,
+    onTabs,
+    onTabText,
+    onCreated,
+  };
 }

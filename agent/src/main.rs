@@ -91,6 +91,19 @@ async fn main() {
     let (tx, rx) = crossbeam_channel::unbounded::<InputCmd>();
     std::thread::spawn(move || input::run(rx));
 
+    // Keep the *system* awake while the agent runs so tmux sessions (and
+    // Claude Code) stay reachable with the display off/locked. `-w` ties the
+    // assertion to our lifetime; the display itself may still sleep.
+    if std::process::Command::new("/usr/bin/caffeinate")
+        .args(["-i", "-s", "-w", &std::process::id().to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+    {
+        println!("[pointflow] keeping the Mac awake while running (display may sleep)");
+    }
+
     // Bridge to tmux for viewing/driving the user's shells.
     let tmux = Tmux::new();
     let (events, _) = broadcast::channel::<String>(64);
@@ -368,6 +381,18 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         ClientMsg::TmuxResize { cols, rows } => state.tmux.resize(cols, rows),
                         ClientMsg::TmuxKeys { id, hex } => {
                             state.tmux.send_keys_to(&id, &decode_hex(&hex));
+                        }
+                        ClientMsg::TmuxNew => {
+                            if let Some((id, label)) = state.tmux.create_session() {
+                                let _ = out_tx.send(Message::Text(
+                                    serde_json::json!({
+                                        "t": "tcreated", "id": id, "label": label
+                                    })
+                                    .to_string(),
+                                ));
+                                let _ =
+                                    out_tx.send(Message::Text(state.tmux.panes_json()));
+                            }
                         }
                         ClientMsg::TabList => {
                             let _ = out_tx.send(Message::Text(state.tabs.tabs_json()));

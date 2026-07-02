@@ -22,6 +22,7 @@ export const msg = {
   // tmux terminal bridge. Output arrives as raw binary frames; keystrokes go
   // back as raw binary too (not through these JSON builders).
   tlist: () => ({ t: "tlist" }),
+  tnew: () => ({ t: "tnew" }),
   tsel: (id: string, cols: number, rows: number) => ({ t: "tsel", id, cols, rows }),
   tresize: (cols: number, rows: number) => ({ t: "tresize", cols, rows }),
   // Send hex-encoded key bytes to a specific pane without selecting it

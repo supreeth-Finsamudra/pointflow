@@ -55,6 +55,9 @@ pub enum ClientMsg {
     /// (used by notification cards: Approve/Deny from anywhere).
     #[serde(rename = "tkeys")]
     TmuxKeys { id: String, hex: String },
+    /// Create a fresh tmux shell (new session) and report it back.
+    #[serde(rename = "tnew")]
+    TmuxNew,
     /// Ask for the list of open Terminal.app tabs (no tmux required).
     #[serde(rename = "tablist")]
     TabList,
@@ -99,6 +102,7 @@ impl ClientMsg {
             | ClientMsg::TmuxSelect { .. }
             | ClientMsg::TmuxResize { .. }
             | ClientMsg::TmuxKeys { .. }
+            | ClientMsg::TmuxNew
             | ClientMsg::TabList
             | ClientMsg::TabSelect { .. }
             | ClientMsg::TabStop => None,

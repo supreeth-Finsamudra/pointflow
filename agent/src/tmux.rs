@@ -117,6 +117,31 @@ impl Tmux {
             .collect()
     }
 
+    /// Create a fresh shell in a new tmux session (starting the tmux server if
+    /// needed) and return its `(pane_id, label)`. Sessions are created in the
+    /// user's home directory.
+    pub fn create_session(&self) -> Option<(String, String)> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+        let out = Command::new(tmux_bin())
+            .args([
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}\t#{session_name}:#{window_index} #{window_name}",
+                "-c",
+                &home,
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let line = String::from_utf8_lossy(&out.stdout);
+        let mut f = line.trim().split('\t');
+        Some((f.next()?.to_string(), f.next().unwrap_or("shell").to_string()))
+    }
+
     /// Human label for a pane id, if it still exists.
     pub fn pane_label(&self, id: &str) -> Option<String> {
         self.list_panes()
