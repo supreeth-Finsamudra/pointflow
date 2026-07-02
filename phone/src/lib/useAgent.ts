@@ -17,6 +17,8 @@ export type PaneInfo = {
   active: boolean;
   w: number;
   h: number;
+  /** Basename of the pane's working directory ("point-flow"). */
+  cwd?: string;
   /** Copilot status from Claude Code hooks: "waiting" | "done" | absent. */
   status?: string;
 };
@@ -37,6 +39,8 @@ export type TabInfo = {
   busy: boolean;
   procs: string;
   claude: boolean;
+  /** Basename of the shell's working directory — the project name. */
+  cwd?: string;
 };
 
 export type OutputHandler = (bytes: ArrayBuffer) => void;

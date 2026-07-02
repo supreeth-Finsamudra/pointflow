@@ -34,6 +34,8 @@ pub struct PaneInfo {
     pub active: bool,
     pub w: u32,
     pub h: u32,
+    /// Basename of the pane's working directory ("point-flow").
+    pub cwd: String,
     /// Copilot status from Claude Code hooks: "waiting" | "done" | absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -84,7 +86,7 @@ impl Tmux {
     }
 
     fn list_panes(&self) -> Vec<PaneInfo> {
-        let fmt = "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_command}\t#{pane_active}\t#{pane_width}\t#{pane_height}";
+        let fmt = "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_command}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_current_path}";
         let out = match Command::new(tmux_bin())
             .args(["list-panes", "-a", "-F", fmt])
             .output()
@@ -100,6 +102,7 @@ impl Tmux {
                 if f.len() < 8 {
                     return None;
                 }
+                let path = f.get(8).copied().unwrap_or("");
                 Some(PaneInfo {
                     id: f[0].to_string(),
                     label: format!("{}:{} {}", f[1], f[2], f[3]),
@@ -107,6 +110,7 @@ impl Tmux {
                     active: f[5] == "1",
                     w: f[6].parse().unwrap_or(80),
                     h: f[7].parse().unwrap_or(24),
+                    cwd: path.rsplit('/').next().unwrap_or(path).to_string(),
                     status: statuses.get(f[0]).cloned(),
                 })
             })

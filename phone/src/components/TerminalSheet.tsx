@@ -212,6 +212,9 @@ function PaneList({
                     <span className="flex min-w-0 flex-col gap-0.5">
                       <span className="truncate font-medium">
                         {t.procs || "shell (idle)"}
+                        {t.cwd ? (
+                          <span className="text-emerald-300/80"> · {t.cwd}</span>
+                        ) : null}
                       </span>
                       <span className="font-mono text-xs text-white/40">
                         {t.tty} · window {t.win} tab {t.tab}
@@ -256,7 +259,12 @@ function PaneList({
                     className="pf-press pf-glass flex w-full items-center justify-between rounded-2xl px-4 py-3.5 text-left"
                   >
                     <span className="flex min-w-0 flex-col gap-0.5">
-                      <span className="truncate font-medium">{p.label}</span>
+                      <span className="truncate font-medium">
+                        {p.label}
+                        {p.cwd ? (
+                          <span className="text-emerald-300/80"> · {p.cwd}</span>
+                        ) : null}
+                      </span>
                       <span className="font-mono text-xs text-white/40">
                         {p.cmd} · {p.w}×{p.h}
                       </span>
@@ -340,7 +348,7 @@ function TabView({
             pinned.current =
               el.scrollHeight - el.scrollTop - el.clientHeight < 60;
           }}
-          className="min-h-0 flex-1 overflow-y-auto px-3 pt-2"
+          className="pf-selectable min-h-0 flex-1 overflow-y-auto px-3 pt-2"
           style={{ touchAction: "pan-y" }}
         >
           <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-white/45">
@@ -353,6 +361,12 @@ function TabView({
 
         {/* quick keys via the injection path (tab is focused on the Mac) */}
         <div className="pf-noscrollbar flex items-center gap-1.5 overflow-x-auto px-2 py-2">
+          <CopyBtn
+            getText={() => {
+              const sel = window.getSelection()?.toString();
+              return sel && sel.length > 0 ? sel : screen;
+            }}
+          />
           <KeyBtn onPress={() => send(msg.key("escape"))}>Esc</KeyBtn>
           <KeyBtn onPress={() => send(msg.key("tab"))}>Tab</KeyBtn>
           <KeyBtn onPress={() => send(msg.key("enter"))}>⏎</KeyBtn>
@@ -516,6 +530,22 @@ function PaneView({
 
         {/* quick keys + font size */}
         <div className="pf-noscrollbar flex items-center gap-1.5 overflow-x-auto px-2 py-2">
+          <CopyBtn
+            getText={() => {
+              const t = termRef.current;
+              if (!t) return "";
+              const sel = t.getSelection?.();
+              if (sel) return sel;
+              // No selection → copy the visible screen.
+              const buf = t.buffer.active;
+              const lines: string[] = [];
+              for (let y = 0; y < t.rows; y++) {
+                const line = buf.getLine(buf.viewportY + y);
+                if (line) lines.push(line.translateToString(true));
+              }
+              return lines.join("\n").trimEnd();
+            }}
+          />
           {QUICK_KEYS.map((k) => (
             <KeyBtn
               key={k.label}
@@ -628,6 +658,32 @@ function KeyBtn({
       className="pf-press shrink-0 select-none rounded-xl border border-white/10 bg-white/[0.07] px-3 py-1.5 font-mono text-sm text-white/80"
     >
       {children}
+    </button>
+  );
+}
+
+/** Copies the current selection (or the visible screen) to the phone
+ *  clipboard, with a brief ✓ confirmation. */
+function CopyBtn({ getText }: { getText: () => string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label="Copy"
+      onClick={async () => {
+        const { copyText } = await import("../lib/clipboard");
+        if (await copyText(getText())) {
+          setDone(true);
+          setTimeout(() => setDone(false), 1200);
+        }
+      }}
+      className={`pf-press shrink-0 select-none rounded-xl border px-3 py-1.5 font-mono text-sm ${
+        done
+          ? "border-emerald-400/40 bg-emerald-500/25 text-emerald-200"
+          : "border-white/10 bg-white/[0.07] text-white/80"
+      }`}
+    >
+      {done ? "✓" : "⧉"}
     </button>
   );
 }

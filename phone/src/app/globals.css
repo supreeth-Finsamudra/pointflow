@@ -177,3 +177,12 @@ textarea {
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* Terminal output must be selectable (long-press → native copy). */
+.pf-selectable,
+.pf-selectable * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+

@@ -36,6 +36,9 @@ pub struct TabInfo {
     pub procs: String,
     /// True if Claude Code is running in this tab.
     pub claude: bool,
+    /// Basename of the shell's working directory ("point-flow") — identifies
+    /// which project a session belongs to.
+    pub cwd: String,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -197,6 +200,7 @@ fn list_tabs() -> Vec<TabInfo> {
             let tty = f[2].trim_start_matches("/dev/").to_string();
             let procs = tty_procs(&tty);
             let claude = procs.to_lowercase().contains("claude");
+            let cwd = tty_cwd(&tty);
             Some(TabInfo {
                 win: f[0].parse().ok()?,
                 tab: f[1].parse().ok()?,
@@ -204,9 +208,38 @@ fn list_tabs() -> Vec<TabInfo> {
                 busy: f[3] == "true",
                 procs,
                 claude,
+                cwd,
             })
         })
         .collect()
+}
+
+/// Basename of the working directory of the shell on a tty — the project name.
+/// The tty's first process (`login`) is root-owned and unreadable, so walk the
+/// process list and take the first one whose cwd we can read (the user shell).
+fn tty_cwd(tty: &str) -> String {
+    let pids = match Command::new("/bin/ps").args(["-o", "pid=", "-t", tty]).output() {
+        Ok(o) => o.stdout,
+        Err(_) => return String::new(),
+    };
+    for pid in String::from_utf8_lossy(&pids).lines().map(str::trim) {
+        let Ok(out) = Command::new("/usr/sbin/lsof")
+            .args(["-a", "-p", pid, "-d", "cwd", "-Fn"])
+            .output()
+        else {
+            continue;
+        };
+        if let Some(line) = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find(|l| l.starts_with("n/"))
+        {
+            let path = &line[1..];
+            if path != "/" {
+                return path.rsplit('/').next().unwrap_or(path).to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 /// Interesting commands on a tty (skips login/shell plumbing), comma-joined.
