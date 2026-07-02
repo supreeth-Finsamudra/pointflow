@@ -1,21 +1,22 @@
 //! Bridges the phone to the user's tmux panes.
 //!
 //! tmux is the one place macOS lets us cleanly read *and* drive already-running
-//! shells: `list-panes` enumerates every pane, `capture-pane` dumps the full
-//! colored scrollback, `pipe-pane` streams live output, and `send-keys` types
-//! into any pane (focused or not) — no Screen Recording or Accessibility needed.
+//! shells. Viewing works by **attaching a real tmux client on a PTY**: on
+//! attach, tmux repaints the entire screen (correct state, cursor, colors) and
+//! keeps it in sync — including full-screen TUIs like Claude Code. Before
+//! attaching we replay the pane's *history* (`capture-pane` up to the visible
+//! screen) so the phone can scroll back through everything.
 //!
-//! One pane is "selected" at a time. Selecting it broadcasts a scrollback
-//! snapshot, then streams the pane's live output (via `pipe-pane` → a temp file
-//! we `tail`). Keystrokes go back through `send-keys -H` (raw hex bytes), so any
-//! key — text, arrows, Ctrl-C — round-trips exactly.
+//! Typing goes through the attached client's PTY. `send-keys -H` is kept for
+//! the Copilot cards, which poke a pane without attaching to it.
 
 use std::collections::HashMap;
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::io::{Read, Write};
+use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
@@ -38,15 +39,17 @@ pub struct PaneInfo {
     pub status: Option<String>,
 }
 
-struct Active {
-    pane: Option<String>,
-    tail: Option<Child>,
-    file: Option<PathBuf>,
+/// The live attachment: a tmux client running inside a PTY we own.
+struct Attach {
+    pane: String,
+    master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
+    child: Box<dyn Child + Send + Sync>,
 }
 
 pub struct Tmux {
     out_tx: broadcast::Sender<Vec<u8>>,
-    active: Mutex<Active>,
+    attach: Mutex<Option<Attach>>,
     /// Copilot status per pane id, driven by Claude Code hook events.
     statuses: Mutex<HashMap<String, String>>,
 }
@@ -56,16 +59,12 @@ impl Tmux {
         let (out_tx, _) = broadcast::channel(BROADCAST_CAP);
         Arc::new(Tmux {
             out_tx,
-            active: Mutex::new(Active {
-                pane: None,
-                tail: None,
-                file: None,
-            }),
+            attach: Mutex::new(None),
             statuses: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Subscribe to the selected pane's output (snapshot first, then live).
+    /// Subscribe to the attached pane's output (history replay, repaint, live).
     pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
         self.out_tx.subscribe()
     }
@@ -130,67 +129,137 @@ impl Tmux {
             .insert(pane.to_string(), status.to_string());
     }
 
-    /// Select a pane: tear down any previous stream, push a scrollback snapshot,
-    /// then start streaming live output.
-    pub fn select(&self, pane: &str) {
-        let mut active = self.active.lock().unwrap();
-        stop_stream(&mut active);
-        active.pane = Some(pane.to_string());
+    /// View a pane at the phone's size: replay its history for scrollback,
+    /// make it the session's active pane, then attach a tmux client on a PTY —
+    /// tmux repaints the full screen into it and streams every update.
+    pub fn select(&self, pane: &str, cols: u16, rows: u16) {
+        let mut slot = self.attach.lock().unwrap();
+        stop_attach(&mut slot);
 
-        // Full scrollback + current screen, with colors.
+        // History only (everything *above* the visible screen), so the phone
+        // can scroll back; the attach below repaints the visible screen itself.
         if let Ok(o) = Command::new(tmux_bin())
-            .args(["capture-pane", "-t", pane, "-p", "-e", "-S", "-"])
+            .args(["capture-pane", "-t", pane, "-p", "-e", "-S", "-", "-E", "-1"])
             .output()
         {
             if o.status.success() && !o.stdout.is_empty() {
-                let _ = self.out_tx.send(o.stdout);
+                let mut history = Vec::with_capacity(o.stdout.len() + 8);
+                // capture-pane emits \n line endings; a fresh xterm needs \r\n.
+                for line in o.stdout.split(|&b| b == b'\n') {
+                    history.extend_from_slice(line);
+                    history.extend_from_slice(b"\r\n");
+                }
+                let _ = self.out_tx.send(history);
             }
         }
 
-        // Live: pipe the pane's output to a temp file, then tail it.
-        let file = std::env::temp_dir().join(format!("pointflow-tmux-{}.log", sanitize(pane)));
-        let _ = std::fs::remove_file(&file);
-        let _ = std::fs::write(&file, b"");
+        // Focus the pane so the attached client shows it.
         let _ = Command::new(tmux_bin())
-            .args([
-                "pipe-pane",
-                "-O",
-                "-t",
-                pane,
-                &format!("cat >> '{}'", file.display()),
-            ])
+            .args(["select-window", "-t", pane])
+            .status();
+        let _ = Command::new(tmux_bin())
+            .args(["select-pane", "-t", pane])
             .status();
 
-        if let Ok(mut child) = Command::new("/usr/bin/tail")
-            .args(["-c", "+1", "-F", &file.to_string_lossy()])
-            .stdout(Stdio::piped())
-            .spawn()
-        {
-            if let Some(mut stdout) = child.stdout.take() {
-                let tx = self.out_tx.clone();
-                std::thread::spawn(move || {
-                    let mut buf = [0u8; 8192];
-                    while let Ok(n) = stdout.read(&mut buf) {
-                        if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                });
+        // Attach as a real client inside a PTY sized to the phone.
+        let pty = match native_pty_system().openpty(PtySize {
+            rows: rows.max(4),
+            cols: cols.max(20),
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[pointflow] tmux attach: openpty failed: {e}");
+                return;
             }
-            active.tail = Some(child);
-            active.file = Some(file);
+        };
+        let mut cmd = CommandBuilder::new(tmux_bin());
+        cmd.args(["attach-session", "-t", pane]);
+        cmd.env("TERM", "xterm-256color");
+        // A leftover $TMUX would make tmux refuse ("sessions should be nested
+        // with care"); we are not inside tmux, but be explicit.
+        cmd.env_remove("TMUX");
+
+        let child = match pty.slave.spawn_command(cmd) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[pointflow] tmux attach failed: {e}");
+                return;
+            }
+        };
+        drop(pty.slave);
+
+        let reader = match pty.master.try_clone_reader() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[pointflow] tmux attach: reader failed: {e}");
+                return;
+            }
+        };
+        let writer = match pty.master.take_writer() {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("[pointflow] tmux attach: writer failed: {e}");
+                return;
+            }
+        };
+
+        // Pump the attached client's screen to the phones.
+        {
+            let tx = self.out_tx.clone();
+            let mut reader = reader;
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = reader.read(&mut buf) {
+                    if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        println!("[pointflow] attached to pane {pane} at {cols}x{rows}");
+        *slot = Some(Attach {
+            pane: pane.to_string(),
+            master: pty.master,
+            writer,
+            child,
+        });
+    }
+
+    /// Raw keystrokes from the phone → the attached tmux client's PTY.
+    pub fn write_input(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let mut slot = self.attach.lock().unwrap();
+        if let Some(a) = slot.as_mut() {
+            let _ = a.writer.write_all(bytes);
+            let _ = a.writer.flush();
+            self.statuses.lock().unwrap().remove(&a.pane);
         }
     }
 
-    /// Send raw key bytes to the selected pane (verbatim, via hex).
-    pub fn send_keys(&self, bytes: &[u8]) {
-        let pane = self.active.lock().unwrap().pane.clone();
-        let Some(pane) = pane else { return };
-        self.send_keys_to(&pane, bytes);
+    /// Resize the attached client to the phone's viewport; tmux reflows
+    /// (window-size=latest means the most recent client wins).
+    pub fn resize(&self, cols: u16, rows: u16) {
+        if cols < 20 || rows < 4 {
+            return;
+        }
+        let slot = self.attach.lock().unwrap();
+        if let Some(a) = slot.as_ref() {
+            let _ = a.master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
     }
 
-    /// Send raw key bytes to a specific pane (used by notification cards).
-    /// Responding to a pane means the user has handled it — clear its badge.
+    /// Send raw key bytes to a specific pane *without* attaching (Copilot
+    /// cards). Responding to a pane clears its badge.
     pub fn send_keys_to(&self, pane: &str, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
@@ -204,26 +273,20 @@ impl Tmux {
         let _ = Command::new(tmux_bin()).args(&args).status();
     }
 
-    /// Stop streaming (e.g. on disconnect): toggle pipe-pane off, kill the tail.
+    /// Detach (e.g. phone closed the pane view or disconnected).
     pub fn stop(&self) {
-        let mut active = self.active.lock().unwrap();
-        stop_stream(&mut active);
-        active.pane = None;
+        let mut slot = self.attach.lock().unwrap();
+        stop_attach(&mut slot);
     }
 }
 
-fn stop_stream(active: &mut Active) {
-    if let Some(pane) = active.pane.clone() {
-        let _ = Command::new(tmux_bin())
-            .args(["pipe-pane", "-t", &pane]) // no command toggles piping off
-            .status();
-    }
-    if let Some(mut child) = active.tail.take() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    if let Some(file) = active.file.take() {
-        let _ = std::fs::remove_file(file);
+fn stop_attach(slot: &mut Option<Attach>) {
+    if let Some(mut a) = slot.take() {
+        // Killing the client detaches it; the session (and Claude Code in it)
+        // keeps running untouched.
+        let _ = a.child.kill();
+        let _ = a.child.wait();
+        println!("[pointflow] detached from pane {}", a.pane);
     }
 }
 
@@ -236,10 +299,4 @@ fn tmux_bin() -> &'static str {
         }
     }
     "tmux"
-}
-
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect()
 }

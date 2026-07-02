@@ -198,10 +198,19 @@ function PaneView({
   const hostRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const termRef = useRef<any>(null);
-  const [zoom, setZoom] = useState(1);
+  const fitRef = useRef<(() => void) | null>(null);
+  const [font, setFont] = useState(12);
   // Track the visible viewport so the input bar stays above the keyboard.
   const [viewH, setViewH] = useState<number | null>(null);
   const sawConnected = useRef(false);
+
+  // Font-size changes refit the grid and re-sync tmux to the new cols/rows.
+  useEffect(() => {
+    const t = termRef.current;
+    if (!t) return;
+    t.options.fontSize = font;
+    fitRef.current?.();
+  }, [font]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -221,16 +230,18 @@ function PaneView({
   useEffect(() => {
     let disposed = false;
     let off: (() => void) | null = null;
+    let ro: ResizeObserver | null = null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let term: any = null;
     const enc = new TextEncoder();
 
     (async () => {
-      const { Terminal } = await import("@xterm/xterm");
+      const [{ Terminal }, { FitAddon }] = await Promise.all([
+        import("@xterm/xterm"),
+        import("@xterm/addon-fit"),
+      ]);
       if (disposed || !hostRef.current) return;
       term = new Terminal({
-        cols: pane.w || 80,
-        rows: pane.h || 24,
         scrollback: 10000,
         fontFamily:
           'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
@@ -238,29 +249,59 @@ function PaneView({
         theme: { background: "#0a0a0a", foreground: "#e5e5e5" },
         cursorBlink: false,
       });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
       term.open(hostRef.current);
       termRef.current = term;
+
+      // Size the terminal to the phone, then attach the pane at that size —
+      // tmux repaints the full screen into exactly these dimensions.
+      try {
+        fit.fit();
+      } catch {
+        /* transient measurement error; defaults are fine */
+      }
+
       term.onData((d: string) => sendBytes(enc.encode(d)));
-      // Register the output sink *before* selecting, so we don't miss the
-      // scrollback snapshot the agent sends on select.
+      // Register the output sink *before* selecting so the history replay and
+      // tmux's initial repaint aren't missed.
       off = onOutput((buf) => term.write(new Uint8Array(buf)));
-      send(msg.tsel(pane.id));
+      send(msg.tsel(pane.id, term.cols, term.rows));
+
+      // Refit + tell tmux when the box changes (keyboard opens, rotation).
+      fitRef.current = () => {
+        try {
+          fit.fit();
+          send(msg.tresize(term.cols, term.rows));
+          term.scrollToBottom();
+        } catch {
+          /* ignore */
+        }
+      };
+      ro = new ResizeObserver(() => fitRef.current?.());
+      ro.observe(hostRef.current);
     })();
 
     return () => {
       disposed = true;
       off?.();
+      ro?.disconnect();
       term?.dispose();
       termRef.current = null;
+      fitRef.current = null;
     };
   }, [pane, send, sendBytes, onOutput]);
 
-  // Re-select (re-stream) after a reconnect, but not on the initial connect
-  // (the effect above already did that).
+  // Re-attach after a reconnect, but not on the initial connect (the effect
+  // above already attached).
   useEffect(() => {
     if (status !== "connected") return;
-    if (sawConnected.current) send(msg.tsel(pane.id));
-    else sawConnected.current = true;
+    if (sawConnected.current) {
+      const t = termRef.current;
+      send(msg.tsel(pane.id, t?.cols ?? 80, t?.rows ?? 24));
+    } else {
+      sawConnected.current = true;
+    }
   }, [status, pane.id, send]);
 
   return (
@@ -288,18 +329,12 @@ function PaneView({
         </button>
       </div>
 
-      {/* terminal — scroll to pan, scale to zoom */}
-      <div
-        className="relative min-h-0 flex-1 overflow-auto bg-[#0a0a0a]"
-        style={{ touchAction: "pan-x pan-y" }}
-      >
-        <div
-          ref={hostRef}
-          style={{ transform: `scale(${zoom})`, transformOrigin: "0 0", width: "max-content" }}
-        />
+      {/* terminal — fitted to the phone; tmux reflows to this size */}
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0a0a0a] px-1">
+        <div ref={hostRef} className="h-full w-full" />
       </div>
 
-      {/* quick keys + zoom */}
+      {/* quick keys + font size */}
       <div className="flex items-center gap-1.5 overflow-x-auto px-2 py-2">
         {QUICK_KEYS.map((k) => (
           <KeyBtn key={k.label} onPress={() => sendBytes(new Uint8Array(k.bytes))}>
@@ -307,15 +342,11 @@ function PaneView({
           </KeyBtn>
         ))}
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <KeyBtn onPress={() => setZoom((z) => Math.max(0.5, +(z * 0.85).toFixed(2)))}>
-            −
-          </KeyBtn>
-          <span className="w-10 text-center text-xs tabular-nums text-white/50">
-            {Math.round(zoom * 100)}%
+          <KeyBtn onPress={() => setFont((f) => Math.max(8, f - 1))}>−</KeyBtn>
+          <span className="w-8 text-center text-xs tabular-nums text-white/50">
+            {font}px
           </span>
-          <KeyBtn onPress={() => setZoom((z) => Math.min(3, +(z * 1.18).toFixed(2)))}>
-            +
-          </KeyBtn>
+          <KeyBtn onPress={() => setFont((f) => Math.min(20, f + 1))}>+</KeyBtn>
         </div>
       </div>
 

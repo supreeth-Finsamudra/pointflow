@@ -250,18 +250,21 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         }
     });
 
-    // Recv half: binary frames are keystrokes for the selected pane; JSON text
+    // Recv half: binary frames are keystrokes for the attached pane; JSON text
     // is tmux control or input that drives the Mac via the engine.
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
-            Message::Binary(b) => state.tmux.send_keys(&b),
+            Message::Binary(b) => state.tmux.write_input(&b),
             Message::Text(t) => {
                 if let Ok(m) = serde_json::from_str::<ClientMsg>(&t) {
                     match m {
                         ClientMsg::TmuxList => {
                             let _ = out_tx.send(Message::Text(state.tmux.panes_json()));
                         }
-                        ClientMsg::TmuxSelect { id } => state.tmux.select(&id),
+                        ClientMsg::TmuxSelect { id, cols, rows } => {
+                            state.tmux.select(&id, cols, rows)
+                        }
+                        ClientMsg::TmuxResize { cols, rows } => state.tmux.resize(cols, rows),
                         ClientMsg::TmuxKeys { id, hex } => {
                             state.tmux.send_keys_to(&id, &decode_hex(&hex));
                         }

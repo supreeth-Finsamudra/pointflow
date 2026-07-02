@@ -44,9 +44,13 @@ pub enum ClientMsg {
     /// Ask for the list of tmux panes (phone's shell picker).
     #[serde(rename = "tlist")]
     TmuxList,
-    /// Select a tmux pane to view/drive (by pane id, e.g. "%3").
+    /// Select a tmux pane to view/drive (by pane id, e.g. "%3"), attaching at
+    /// the phone's terminal size.
     #[serde(rename = "tsel")]
-    TmuxSelect { id: String },
+    TmuxSelect { id: String, cols: u16, rows: u16 },
+    /// Resize the attached tmux client to the phone's viewport.
+    #[serde(rename = "tresize")]
+    TmuxResize { cols: u16, rows: u16 },
     /// Send hex-encoded key bytes to a *specific* pane without selecting it
     /// (used by notification cards: Approve/Deny from anywhere).
     #[serde(rename = "tkeys")]
@@ -83,6 +87,7 @@ impl ClientMsg {
             | ClientMsg::Ping
             | ClientMsg::TmuxList
             | ClientMsg::TmuxSelect { .. }
+            | ClientMsg::TmuxResize { .. }
             | ClientMsg::TmuxKeys { .. } => None,
             ClientMsg::Move { dx, dy } => Some(InputCmd::Move { dx, dy }),
             ClientMsg::Click { button, double } => Some(InputCmd::Click {
