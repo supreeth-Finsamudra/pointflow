@@ -71,7 +71,9 @@ impl Push {
                 sub,
             )
             .and_then(|mut b| {
-                b.add_claim("sub", "mailto:pointflow@localhost");
+                // Apple validates this contact claim; localhost mailto gets a
+                // 403 BadJwtToken. A real https URI passes.
+                b.add_claim("sub", "https://github.com/supreeth-Finsamudra/pointflow");
                 b.build()
             }) {
                 Ok(s) => s,

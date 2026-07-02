@@ -183,24 +183,33 @@ async fn event_handler(
     let kind = q.get("kind").map(String::as_str).unwrap_or("notification");
     let pane = q.get("pane").cloned().unwrap_or_default();
 
-    // The hook forwards Claude Code's JSON on stdin; pull out the human text.
-    let message = serde_json::from_str::<serde_json::Value>(&body)
-        .ok()
+    // The hook forwards Claude Code's JSON on stdin; pull out the human text
+    // and the session's working directory (identifies WHICH agent this is).
+    let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
+    let message = parsed
+        .as_ref()
         .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
         .unwrap_or_else(|| match kind {
             "stop" => "Claude finished responding".to_string(),
             _ => "Claude needs your input".to_string(),
         });
+    let cwd_label = parsed
+        .as_ref()
+        .and_then(|v| v.get("cwd").and_then(|c| c.as_str()))
+        .map(|p| format!("claude · {}", p.rsplit('/').next().unwrap_or(p)));
 
     let label = if pane.is_empty() {
-        None
+        // Session outside tmux — identify it by its project folder instead.
+        cwd_label.unwrap_or_default()
     } else {
         let status = if kind == "stop" { "done" } else { "waiting" };
         state.tmux.set_status(&pane, status);
-        state.tmux.pane_label(&pane)
+        state
+            .tmux
+            .pane_label(&pane)
+            .or(cwd_label)
+            .unwrap_or_else(|| pane.clone())
     };
-
-    let label = label.unwrap_or_else(|| pane.clone());
     let event = serde_json::json!({
         "t": "event",
         "kind": kind,

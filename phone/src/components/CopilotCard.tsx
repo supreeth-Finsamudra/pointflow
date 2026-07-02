@@ -24,8 +24,12 @@ export function CopilotCard({ event, send, onOpen, onDismiss }: Props) {
 
   return (
     <div
-      className="pf-drop fixed inset-x-3 top-3 z-[70] rounded-2xl border border-emerald-300/25 bg-[#0c0c11]/95 p-4 shadow-2xl shadow-emerald-500/10 backdrop-blur-xl"
-      style={{ boxShadow: "0 0 40px rgba(16,185,129,.14), 0 18px 50px rgba(0,0,0,.6)" }}
+      className="pf-drop fixed inset-x-3 z-[70] rounded-2xl border border-emerald-300/25 bg-[#0c0c11]/95 p-4 shadow-2xl shadow-emerald-500/10 backdrop-blur-xl"
+      style={{
+        // Below the iOS status bar in the installed PWA, so ✕ stays tappable.
+        top: "max(0.75rem, calc(env(safe-area-inset-top) + 0.25rem))",
+        boxShadow: "0 0 40px rgba(16,185,129,.14), 0 18px 50px rgba(0,0,0,.6)",
+      }}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
