@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0a0a0a;
-  --foreground: #ededed;
+  --background: #050508;
+  --foreground: #ededf2;
 }
 
 @theme inline {
@@ -23,6 +23,148 @@ body {
   user-select: none;
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* ————— PointFlow "neon deck" theme ————— */
+
+/* Aurora: two soft color fields drifting behind everything. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -40%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(42% 36% at 18% 12%, rgba(16, 185, 129, 0.16), transparent 70%),
+    radial-gradient(46% 40% at 85% 88%, rgba(139, 92, 246, 0.13), transparent 70%),
+    radial-gradient(30% 26% at 78% 18%, rgba(34, 211, 238, 0.08), transparent 70%);
+  animation: pf-aurora 16s ease-in-out infinite alternate;
+}
+
+@keyframes pf-aurora {
+  from {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(2%, 2%, 0) scale(1.06);
+  }
+}
+
+/* Glass panel */
+.pf-glass {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* Brand gradient text */
+.pf-brand {
+  background: linear-gradient(92deg, #34d399 0%, #22d3ee 55%, #a78bfa 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Primary gradient surface (send buttons, accents) */
+.pf-accent {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.85), rgba(34, 211, 238, 0.75));
+  color: #04120d;
+}
+
+/* Tactile press */
+.pf-press {
+  transition:
+    transform 0.08s ease,
+    filter 0.12s ease;
+}
+.pf-press:active {
+  transform: scale(0.94);
+  filter: brightness(1.25);
+}
+
+/* Sheet + card entrances */
+@keyframes pf-rise {
+  from {
+    opacity: 0;
+    transform: translateY(26px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.pf-rise {
+  animation: pf-rise 0.28s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+@keyframes pf-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.pf-drop {
+  animation: pf-drop 0.3s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+@keyframes pf-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.pf-fade {
+  animation: pf-fade 0.25s ease;
+}
+
+/* Live status dot: breathing ring */
+@keyframes pf-ping {
+  0% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(52, 211, 153, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+  }
+}
+.pf-live {
+  animation: pf-ping 1.8s ease-out infinite;
+}
+
+/* Upload spinner glyph */
+@keyframes pf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.pf-spin {
+  animation: pf-spin 0.9s linear infinite;
+}
+
+/* Trackpad surface: fine dot grid + inner glow */
+.pf-pad {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+  background-size: 18px 18px;
+  box-shadow:
+    inset 0 0 60px rgba(16, 185, 129, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Hide scrollbars on chrome-y strips */
+.pf-noscrollbar {
+  scrollbar-width: none;
+}
+.pf-noscrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* The trackpad surface: swallow all native touch gestures. */

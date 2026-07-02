@@ -23,11 +23,14 @@ export function CopilotCard({ event, send, onOpen, onDismiss }: Props) {
   };
 
   return (
-    <div className="fixed inset-x-3 top-3 z-[70] rounded-2xl border border-white/10 bg-[#151517] p-4 shadow-2xl shadow-black/60">
+    <div
+      className="pf-drop fixed inset-x-3 top-3 z-[70] rounded-2xl border border-emerald-300/25 bg-[#0c0c11]/95 p-4 shadow-2xl shadow-emerald-500/10 backdrop-blur-xl"
+      style={{ boxShadow: "0 0 40px rgba(16,185,129,.14), 0 18px 50px rgba(0,0,0,.6)" }}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300/80">
-            {event.kind === "stop" ? "Claude finished" : "Claude needs you"}
+          <p className="pf-brand text-xs font-bold uppercase tracking-widest">
+            {event.kind === "stop" ? "✓ Claude finished" : "✳ Claude needs you"}
           </p>
           <p className="mt-1 break-words text-sm leading-snug text-white/90">
             {event.message}
@@ -54,14 +57,14 @@ export function CopilotCard({ event, send, onOpen, onDismiss }: Props) {
             <button
               type="button"
               onClick={() => reply("0d")}
-              className="flex-1 select-none rounded-xl bg-emerald-500/20 py-2 text-sm font-medium text-emerald-200 active:bg-emerald-500/30"
+              className="pf-press pf-accent flex-1 select-none rounded-xl py-2 text-sm font-semibold"
             >
               Approve ⏎
             </button>
             <button
               type="button"
               onClick={() => reply("1b")}
-              className="flex-1 select-none rounded-xl bg-red-500/15 py-2 text-sm font-medium text-red-300 active:bg-red-500/25"
+              className="pf-press flex-1 select-none rounded-xl border border-red-400/25 bg-red-500/15 py-2 text-sm font-medium text-red-300"
             >
               Deny Esc
             </button>
@@ -74,7 +77,7 @@ export function CopilotCard({ event, send, onOpen, onDismiss }: Props) {
               onOpen({ id: event.pane, label: event.label });
               onDismiss();
             }}
-            className="flex-1 select-none rounded-xl bg-white/10 py-2 text-sm font-medium text-white/80 active:bg-white/20"
+            className="pf-press flex-1 select-none rounded-xl border border-white/10 bg-white/10 py-2 text-sm font-medium text-white/80"
           >
             Open shell
           </button>

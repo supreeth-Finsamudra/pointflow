@@ -19,6 +19,8 @@ import type {
   TabTextHandler,
   TabsHandler,
 } from "../lib/useAgent";
+import { useVisibleViewport } from "../lib/useViewport";
+import { PhotoButton } from "./PhotoButton";
 import { TextBar } from "./TextBar";
 
 type Props = {
@@ -33,6 +35,44 @@ type Props = {
   /** Jump straight into this pane (from a Copilot card's "Open shell"). */
   initialPane?: { id: string; label: string } | null;
 };
+
+/**
+ * Full-screen sheet chrome that plays nice with the on-screen keyboard: an
+ * opaque backdrop always covers the whole screen (so the page underneath can
+ * never bleed through), while the content column tracks the *visible* viewport
+ * so inputs stay above the keyboard.
+ */
+function SheetShell({ children }: { children: React.ReactNode }) {
+  const { h, top } = useVisibleViewport();
+  return (
+    <div className="fixed inset-0 z-50 bg-[#050508]">
+      <div
+        className="absolute left-0 flex w-full flex-col"
+        style={{ top, height: h ? `${h}px` : "100%" }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function HeaderBtn({
+  children,
+  onPress,
+}: {
+  children: React.ReactNode;
+  onPress: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPress}
+      className="pf-press select-none rounded-xl border border-white/10 bg-white/[0.07] px-3 py-1 text-sm text-white/80"
+    >
+      {children}
+    </button>
+  );
+}
 
 export function TerminalSheet({
   onClose,
@@ -137,117 +177,109 @@ function PaneList({
   onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#0a0a0a]">
-      <div className="flex items-center justify-between px-3 py-2">
-        <span className="font-mono text-sm font-semibold tracking-tight text-emerald-300/90">
-          {">_ shells"}
-        </span>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onRefresh}
-            className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
-          >
-            Refresh
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
-          >
-            Done
-          </button>
+    <SheetShell>
+      <div className="pf-rise flex min-h-0 flex-1 flex-col">
+        <div className="pf-glass mx-3 mt-3 flex items-center justify-between rounded-2xl px-4 py-2.5">
+          <span className="pf-brand font-mono text-base font-bold tracking-tight">
+            {">_ shells"}
+          </span>
+          <div className="flex items-center gap-2">
+            <HeaderBtn onPress={onRefresh}>↻</HeaderBtn>
+            <HeaderBtn onPress={onClose}>Done</HeaderBtn>
+          </div>
+        </div>
+
+        <div className="pf-noscrollbar min-h-0 flex-1 overflow-auto px-3 pb-6">
+          {/* Already-open Terminal.app tabs — zero setup */}
+          <p className="mb-2 mt-4 text-[11px] font-bold uppercase tracking-[0.18em] text-white/35">
+            Terminal tabs
+          </p>
+          {tabs === null ? (
+            <p className="text-sm text-white/40">Loading…</p>
+          ) : tabs.length === 0 ? (
+            <p className="text-sm text-white/40">No Terminal windows open.</p>
+          ) : (
+            <ul className="flex flex-col gap-2.5">
+              {tabs.map((t) => (
+                <li key={`${t.win}:${t.tab}`}>
+                  <button
+                    type="button"
+                    onClick={() => onPickTab(t)}
+                    className={`pf-press pf-glass flex w-full items-center justify-between rounded-2xl px-4 py-3.5 text-left ${
+                      t.claude ? "border-violet-400/25" : ""
+                    }`}
+                  >
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="truncate font-medium">
+                        {t.procs || "shell (idle)"}
+                      </span>
+                      <span className="font-mono text-xs text-white/40">
+                        {t.tty} · window {t.win} tab {t.tab}
+                      </span>
+                    </span>
+                    {t.claude ? (
+                      <span className="shrink-0 rounded-full border border-violet-400/30 bg-violet-400/15 px-2.5 py-1 text-xs font-semibold text-violet-300">
+                        ✳ claude
+                      </span>
+                    ) : t.busy ? (
+                      <span className="shrink-0 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-xs font-medium text-emerald-300">
+                        ● running
+                      </span>
+                    ) : null}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/* tmux panes — full-fidelity mode */}
+          <p className="mb-2 mt-7 text-[11px] font-bold uppercase tracking-[0.18em] text-white/35">
+            tmux shells · best quality
+          </p>
+          {panes === null ? (
+            <p className="text-sm text-white/40">Loading…</p>
+          ) : panes.length === 0 ? (
+            <div className="pf-glass rounded-2xl px-4 py-3 text-sm leading-relaxed text-white/50">
+              None yet — for the crispest view (colors, live TUIs), run on the
+              Mac:
+              <pre className="mt-2 rounded-xl bg-black/40 px-3 py-2 font-mono text-xs text-emerald-300/80">
+                tmux new -s work{"\n"}claude
+              </pre>
+            </div>
+          ) : (
+            <ul className="flex flex-col gap-2.5">
+              {panes.map((p) => (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    onClick={() => onPick(p)}
+                    className="pf-press pf-glass flex w-full items-center justify-between rounded-2xl px-4 py-3.5 text-left"
+                  >
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="truncate font-medium">{p.label}</span>
+                      <span className="font-mono text-xs text-white/40">
+                        {p.cmd} · {p.w}×{p.h}
+                      </span>
+                    </span>
+                    {p.status === "waiting" ? (
+                      <span className="shrink-0 rounded-full border border-amber-400/30 bg-amber-400/15 px-2.5 py-1 text-xs font-semibold text-amber-300">
+                        ⏸ needs you
+                      </span>
+                    ) : p.status === "done" ? (
+                      <span className="shrink-0 rounded-full border border-emerald-400/25 bg-emerald-400/15 px-2.5 py-1 text-xs font-medium text-emerald-300">
+                        ✓ done
+                      </span>
+                    ) : p.active ? (
+                      <span className="pf-live h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
+                    ) : null}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
-
-      <div className="min-h-0 flex-1 overflow-auto px-3 pb-4">
-        {/* Already-open Terminal.app tabs — zero setup */}
-        <p className="mb-2 mt-2 text-xs font-semibold uppercase tracking-wide text-white/40">
-          Terminal tabs
-        </p>
-        {tabs === null ? (
-          <p className="text-sm text-white/40">Loading…</p>
-        ) : tabs.length === 0 ? (
-          <p className="text-sm text-white/40">No Terminal windows open.</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {tabs.map((t) => (
-              <li key={`${t.win}:${t.tab}`}>
-                <button
-                  type="button"
-                  onClick={() => onPickTab(t)}
-                  className="flex w-full items-center justify-between rounded-xl bg-white/5 px-4 py-3 text-left active:bg-white/10"
-                >
-                  <span className="flex min-w-0 flex-col">
-                    <span className="truncate font-medium">
-                      {t.procs || "shell (idle)"}
-                    </span>
-                    <span className="font-mono text-xs text-white/45">
-                      {t.tty} · window {t.win} tab {t.tab}
-                    </span>
-                  </span>
-                  {t.claude ? (
-                    <span className="shrink-0 rounded-full bg-violet-400/15 px-2.5 py-0.5 text-xs font-medium text-violet-300">
-                      ✳ claude
-                    </span>
-                  ) : t.busy ? (
-                    <span className="shrink-0 rounded-full bg-emerald-400/15 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
-                      ● running
-                    </span>
-                  ) : null}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {/* tmux panes — full-fidelity mode */}
-        <p className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-white/40">
-          tmux shells (best quality)
-        </p>
-        {panes === null ? (
-          <p className="text-sm text-white/40">Loading…</p>
-        ) : panes.length === 0 ? (
-          <div className="text-sm leading-relaxed text-white/50">
-            None yet — for the crispest view (colors, live TUIs), run on the
-            Mac:
-            <pre className="mt-2 rounded-lg bg-white/5 px-3 py-2 font-mono text-xs text-emerald-300/80">
-              tmux new -s work{"\n"}claude
-            </pre>
-          </div>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {panes.map((p) => (
-              <li key={p.id}>
-                <button
-                  type="button"
-                  onClick={() => onPick(p)}
-                  className="flex w-full items-center justify-between rounded-xl bg-white/5 px-4 py-3 text-left active:bg-white/10"
-                >
-                  <span className="flex min-w-0 flex-col">
-                    <span className="truncate font-medium">{p.label}</span>
-                    <span className="font-mono text-xs text-white/45">
-                      {p.cmd} · {p.w}×{p.h}
-                    </span>
-                  </span>
-                  {p.status === "waiting" ? (
-                    <span className="shrink-0 rounded-full bg-amber-400/15 px-2.5 py-0.5 text-xs font-medium text-amber-300">
-                      ⏸ needs you
-                    </span>
-                  ) : p.status === "done" ? (
-                    <span className="shrink-0 rounded-full bg-emerald-400/15 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
-                      ✓ done
-                    </span>
-                  ) : p.active ? (
-                    <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
-                  ) : null}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
+    </SheetShell>
   );
 }
 
@@ -270,20 +302,6 @@ function TabView({
   const [screen, setScreen] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
-  const [viewH, setViewH] = useState<number | null>(null);
-
-  useEffect(() => {
-    const vv = window.visualViewport;
-    const update = () =>
-      setViewH(vv ? Math.round(vv.height) : window.innerHeight);
-    update();
-    vv?.addEventListener("resize", update);
-    window.addEventListener("resize", update);
-    return () => {
-      vv?.removeEventListener("resize", update);
-      window.removeEventListener("resize", update);
-    };
-  }, []);
 
   useEffect(() => {
     const off = onTabText((kind, text) => {
@@ -304,66 +322,59 @@ function TabView({
   }, [hist, screen]);
 
   return (
-    <div
-      className="fixed left-0 top-0 z-50 flex w-full flex-col bg-[#0a0a0a]"
-      style={{ height: viewH ? `${viewH}px` : "100dvh" }}
-    >
-      <div className="flex items-center justify-between px-3 py-2">
-        <button
-          type="button"
-          onClick={onBack}
-          className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
+    <SheetShell>
+      <div className="pf-fade flex min-h-0 flex-1 flex-col">
+        <div className="pf-glass mx-2 mt-2 flex items-center justify-between rounded-2xl px-3 py-2">
+          <HeaderBtn onPress={onBack}>‹ Shells</HeaderBtn>
+          <span className="truncate px-2 font-mono text-xs text-white/60">
+            {tab.claude ? "✳ " : ""}
+            {tab.procs || tab.tty}
+          </span>
+          <HeaderBtn onPress={onClose}>Done</HeaderBtn>
+        </div>
+
+        <div
+          ref={scrollRef}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            pinned.current =
+              el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+          }}
+          className="min-h-0 flex-1 overflow-y-auto px-3 pt-2"
+          style={{ touchAction: "pan-y" }}
         >
-          ‹ Shells
-        </button>
-        <span className="truncate px-2 font-mono text-xs text-white/60">
-          {tab.procs || tab.tty}
-        </span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
-        >
-          Done
-        </button>
-      </div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-white/45">
+            {hist}
+          </pre>
+          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-white/90">
+            {screen || "Connecting to tab…"}
+          </pre>
+        </div>
 
-      <div
-        ref={scrollRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          pinned.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-        }}
-        className="min-h-0 flex-1 overflow-y-auto px-2"
-        style={{ touchAction: "pan-y" }}
-      >
-        <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-white/50">
-          {hist}
-        </pre>
-        <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-white/90">
-          {screen || "Connecting to tab…"}
-        </pre>
-      </div>
+        {/* quick keys via the injection path (tab is focused on the Mac) */}
+        <div className="pf-noscrollbar flex items-center gap-1.5 overflow-x-auto px-2 py-2">
+          <KeyBtn onPress={() => send(msg.key("escape"))}>Esc</KeyBtn>
+          <KeyBtn onPress={() => send(msg.key("tab"))}>Tab</KeyBtn>
+          <KeyBtn onPress={() => send(msg.key("enter"))}>⏎</KeyBtn>
+          <KeyBtn onPress={() => send(msg.key("up"))}>↑</KeyBtn>
+          <KeyBtn onPress={() => send(msg.key("down"))}>↓</KeyBtn>
+          <KeyBtn onPress={() => send(msg.key("left"))}>←</KeyBtn>
+          <KeyBtn onPress={() => send(msg.key("right"))}>→</KeyBtn>
+          <KeyBtn onPress={() => send(msg.chord(["ctrl"], "c"))}>⌃C</KeyBtn>
+          <KeyBtn onPress={() => send(msg.tabsel(tab.win, tab.tab))}>
+            Focus
+          </KeyBtn>
+        </div>
 
-      {/* quick keys via the injection path (tab is focused on the Mac) */}
-      <div className="flex items-center gap-1.5 overflow-x-auto px-2 py-2">
-        <KeyBtn onPress={() => send(msg.key("escape"))}>Esc</KeyBtn>
-        <KeyBtn onPress={() => send(msg.key("tab"))}>Tab</KeyBtn>
-        <KeyBtn onPress={() => send(msg.key("enter"))}>⏎</KeyBtn>
-        <KeyBtn onPress={() => send(msg.key("up"))}>↑</KeyBtn>
-        <KeyBtn onPress={() => send(msg.key("down"))}>↓</KeyBtn>
-        <KeyBtn onPress={() => send(msg.key("left"))}>←</KeyBtn>
-        <KeyBtn onPress={() => send(msg.key("right"))}>→</KeyBtn>
-        <KeyBtn onPress={() => send(msg.chord(["ctrl"], "c"))}>⌃C</KeyBtn>
-        <KeyBtn onPress={() => send(msg.tabsel(tab.win, tab.tab))}>Focus</KeyBtn>
+        {/* photo + typing → injected into the focused tab */}
+        <div className="flex items-end gap-2 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <PhotoButton onPath={(path) => send(msg.text(`${path} `))} />
+          <div className="min-w-0 flex-1">
+            <TextBar send={send} />
+          </div>
+        </div>
       </div>
-
-      {/* typing → injected into the focused tab */}
-      <div className="px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-        <TextBar send={send} />
-      </div>
-    </div>
+    </SheetShell>
   );
 }
 
@@ -400,8 +411,6 @@ function PaneView({
   const termRef = useRef<any>(null);
   const fitRef = useRef<(() => void) | null>(null);
   const [font, setFont] = useState(12);
-  // Track the visible viewport so the input bar stays above the keyboard.
-  const [viewH, setViewH] = useState<number | null>(null);
   const sawConnected = useRef(false);
 
   // Font-size changes refit the grid and re-sync tmux to the new cols/rows.
@@ -411,21 +420,6 @@ function PaneView({
     t.options.fontSize = font;
     fitRef.current?.();
   }, [font]);
-
-  useEffect(() => {
-    const vv = window.visualViewport;
-    const update = () =>
-      setViewH(vv ? Math.round(vv.height) : window.innerHeight);
-    update();
-    vv?.addEventListener("resize", update);
-    vv?.addEventListener("scroll", update);
-    window.addEventListener("resize", update);
-    return () => {
-      vv?.removeEventListener("resize", update);
-      vv?.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
-    };
-  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -446,7 +440,7 @@ function PaneView({
         fontFamily:
           'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
         fontSize: 12,
-        theme: { background: "#0a0a0a", foreground: "#e5e5e5" },
+        theme: { background: "#050508", foreground: "#e5e5e5" },
         cursorBlink: false,
       });
       const fit = new FitAddon();
@@ -505,56 +499,55 @@ function PaneView({
   }, [status, pane.id, send]);
 
   return (
-    <div
-      className="fixed left-0 top-0 z-50 flex w-full flex-col bg-[#0a0a0a]"
-      style={{ height: viewH ? `${viewH}px` : "100dvh" }}
-    >
-      <div className="flex items-center justify-between px-3 py-2">
-        <button
-          type="button"
-          onClick={onBack}
-          className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
-        >
-          ‹ Shells
-        </button>
-        <span className="truncate px-2 font-mono text-xs text-white/60">
-          {pane.label}
-        </span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
-        >
-          Done
-        </button>
-      </div>
-
-      {/* terminal — fitted to the phone; tmux reflows to this size */}
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-[#0a0a0a] px-1">
-        <div ref={hostRef} className="h-full w-full" />
-      </div>
-
-      {/* quick keys + font size */}
-      <div className="flex items-center gap-1.5 overflow-x-auto px-2 py-2">
-        {QUICK_KEYS.map((k) => (
-          <KeyBtn key={k.label} onPress={() => sendBytes(new Uint8Array(k.bytes))}>
-            {k.label}
-          </KeyBtn>
-        ))}
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <KeyBtn onPress={() => setFont((f) => Math.max(8, f - 1))}>−</KeyBtn>
-          <span className="w-8 text-center text-xs tabular-nums text-white/50">
-            {font}px
+    <SheetShell>
+      <div className="pf-fade flex min-h-0 flex-1 flex-col">
+        <div className="pf-glass mx-2 mt-2 flex items-center justify-between rounded-2xl px-3 py-2">
+          <HeaderBtn onPress={onBack}>‹ Shells</HeaderBtn>
+          <span className="truncate px-2 font-mono text-xs text-white/60">
+            {pane.label}
           </span>
-          <KeyBtn onPress={() => setFont((f) => Math.min(20, f + 1))}>+</KeyBtn>
+          <HeaderBtn onPress={onClose}>Done</HeaderBtn>
+        </div>
+
+        {/* terminal — fitted to the phone; tmux reflows to this size */}
+        <div className="relative min-h-0 flex-1 overflow-hidden px-1 pt-1">
+          <div ref={hostRef} className="h-full w-full" />
+        </div>
+
+        {/* quick keys + font size */}
+        <div className="pf-noscrollbar flex items-center gap-1.5 overflow-x-auto px-2 py-2">
+          {QUICK_KEYS.map((k) => (
+            <KeyBtn
+              key={k.label}
+              onPress={() => sendBytes(new Uint8Array(k.bytes))}
+            >
+              {k.label}
+            </KeyBtn>
+          ))}
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <KeyBtn onPress={() => setFont((f) => Math.max(8, f - 1))}>−</KeyBtn>
+            <span className="w-8 text-center text-xs tabular-nums text-white/50">
+              {font}px
+            </span>
+            <KeyBtn onPress={() => setFont((f) => Math.min(20, f + 1))}>
+              +
+            </KeyBtn>
+          </div>
+        </div>
+
+        {/* photo + type bar → raw bytes → the attached pane */}
+        <div className="flex items-end gap-2 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <PhotoButton
+            onPath={(path) =>
+              sendBytes(new TextEncoder().encode(`${path} `))
+            }
+          />
+          <div className="min-w-0 flex-1">
+            <TypeBar sendBytes={sendBytes} />
+          </div>
         </div>
       </div>
-
-      {/* type bar → raw bytes → tmux send-keys */}
-      <div className="px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-        <TypeBar sendBytes={sendBytes} />
-      </div>
-    </div>
+    </SheetShell>
   );
 }
 
@@ -604,16 +597,16 @@ function TypeBar({ sendBytes }: { sendBytes: (b: Uint8Array) => void }) {
             submit();
           }
         }}
-        placeholder="Type here → goes to this shell"
+        placeholder="Type here → this shell"
         autoCapitalize="none"
         autoCorrect="off"
         spellCheck={false}
-        className="min-h-11 flex-1 resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-base outline-none placeholder:text-white/30 focus:border-white/30"
+        className="min-h-11 flex-1 resize-none rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-base outline-none backdrop-blur placeholder:text-white/30 focus:border-emerald-300/40"
       />
       <button
         type="button"
         onClick={submit}
-        className="min-h-11 select-none rounded-xl bg-emerald-500/20 px-4 text-emerald-200 active:bg-emerald-500/30"
+        className="pf-press pf-accent min-h-11 select-none rounded-xl px-4 font-semibold"
       >
         ⏎
       </button>
@@ -632,7 +625,7 @@ function KeyBtn({
     <button
       type="button"
       onClick={onPress}
-      className="shrink-0 select-none rounded-lg bg-white/10 px-3 py-1.5 font-mono text-sm text-white/80 active:bg-white/20"
+      className="pf-press shrink-0 select-none rounded-xl border border-white/10 bg-white/[0.07] px-3 py-1.5 font-mono text-sm text-white/80"
     >
       {children}
     </button>

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        DefaultBodyLimit, Query, State,
     },
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -107,6 +107,8 @@ async fn main() {
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/event", post(event_handler))
+        .route("/upload", post(upload_handler))
+        .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .fallback_service(serve_dir)
         .with_state(state);
 
@@ -300,6 +302,49 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     events_task.abort();
     send_task.abort();
     println!("[pointflow] phone disconnected");
+}
+
+/// Receives a photo/file from the phone and saves it under ~/Downloads/PointFlow,
+/// returning the absolute path — the phone then inserts that path into the
+/// terminal prompt so Claude Code can read the image. Token-authenticated.
+async fn upload_handler(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    if q.get("token") != Some(&state.token) {
+        return (StatusCode::UNAUTHORIZED, String::new());
+    }
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, String::new());
+    }
+
+    let name = q.get("name").map(String::as_str).unwrap_or("photo.jpg");
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let dir = match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h).join("Downloads").join("PointFlow"),
+        None => std::env::temp_dir().join("pointflow-uploads"),
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+    let path = dir.join(format!("{stamp}-{safe}"));
+    if let Err(e) = std::fs::write(&path, &body) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+    println!("[pointflow] photo saved: {} ({} KB)", path.display(), body.len() / 1024);
+    (
+        StatusCode::OK,
+        serde_json::json!({ "path": path.to_string_lossy() }).to_string(),
+    )
 }
 
 /// Decode a hex string ("0d0a") to bytes; invalid input yields an empty vec.
