@@ -1,0 +1,75 @@
+# Copilot mode — Claude Code notifications on your phone
+
+Kick off Claude Code on the Mac and walk away: your phone shows a card the
+moment Claude **needs your permission/input** or **finishes**, and you can
+**Approve / Deny / open the shell** with one tap — from anywhere in the app,
+without watching the terminal.
+
+## How it works
+
+```
+Claude Code ──hooks──► POST /event (Bearer token) ──► agent ──WS──► phone card
+     ▲                                                                │
+     └───────────── tmux send-keys ◄──── tap Approve/Deny ────────────┘
+```
+
+- **Detection** — official Claude Code hooks (no scraping):
+  - `Notification` → fires when Claude needs permission or input.
+  - `Stop` → fires when Claude finishes responding.
+  Each hook `curl`s the agent's `/event` endpoint, forwarding the hook's JSON
+  (stdin) plus the tmux pane it ran in (`$TMUX_PANE`).
+- **Auth** — `/event` requires the same session token as the WebSocket
+  (`Authorization: Bearer …`, read from `~/.pointflow/token`), so nothing else
+  on the network can spoof notifications. Wrong token → 401.
+- **Relay** — the agent broadcasts `{"t":"event",kind,pane,label,message}` to
+  connected phones and records a per-pane status (`waiting` / `done`).
+- **Action** — the card's Approve sends **Enter** (accepts Claude's default
+  option) and Deny sends **Esc**, delivered by `tmux send-keys` to that exact
+  pane — it doesn't need to be focused on the Mac or open on the phone.
+  "Open shell" jumps straight into the pane view for context. Responding
+  clears the pane's badge.
+
+## Install (one-time)
+
+```bash
+cd agent && cargo run -- --install-hooks
+```
+
+Merges the two hooks into `~/.claude/settings.json` **non-destructively**
+(backup written to `settings.json.bak-pointflow`; idempotent — safe to re-run).
+Claude Code sessions started *after* the install will fire the hooks. Remove by
+deleting the two entries containing `.pointflow/token`, or restore the backup.
+
+## What you see on the phone
+
+- A **card** slides in: *"Claude needs your permission to use Bash"* with
+  **Approve ⏎ / Deny Esc / Open shell**. Finished tasks show *"Claude
+  finished"* with **Open shell**.
+- The `>_` button gets an **amber dot** while a card is pending.
+- The shell picker shows per-pane badges: **⏸ needs you** / **✓ done**.
+- Android phones vibrate on arrival (iOS Safari has no vibration API; the card
+  itself is the signal there).
+
+## Caveats (v1)
+
+- The phone page must be open (foreground or briefly backgrounded) to receive
+  cards — true lock-screen push needs HTTPS + an installed PWA, which plain
+  LAN HTTP can't provide. Running the agent behind an HTTPS tunnel (see
+  "Remote access" in the README) is the path to real push later.
+- Approve sends Enter = Claude's default choice ("Yes"). For the other options
+  ("don't ask again", numbered choices), tap **Open shell** and answer there.
+- Events outside tmux still show a card (no pane → no Approve/Open buttons).
+
+## Remote access (outside your WiFi)
+
+The agent binds `0.0.0.0`, so any routable path to the Mac works:
+
+1. **Tailscale (recommended)** — install on Mac + phone, then open
+   `http://<mac-tailscale-ip>:8742/?token=…`. Works from anywhere, WireGuard-
+   encrypted, no code changes, free for personal use.
+2. **Cloudflare Tunnel / ngrok** — gives a public **HTTPS** URL
+   (`cloudflared tunnel --url http://localhost:8742`). The phone client
+   auto-switches to `wss://` on HTTPS pages, so it works as-is — and HTTPS is
+   what later unlocks real Web Push. Caution: the URL is public; the session
+   token is the only gate, so treat the link like a password.
+3. **Router port-forwarding** — don't; plain HTTP on the open internet.

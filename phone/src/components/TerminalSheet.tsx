@@ -22,6 +22,8 @@ type Props = {
   sendBytes: (bytes: Uint8Array) => void;
   onOutput: (handler: OutputHandler) => () => void;
   onPanes: (handler: PanesHandler) => () => void;
+  /** Jump straight into this pane (from a Copilot card's "Open shell"). */
+  initialPane?: { id: string; label: string } | null;
 };
 
 export function TerminalSheet({
@@ -31,9 +33,21 @@ export function TerminalSheet({
   sendBytes,
   onOutput,
   onPanes,
+  initialPane,
 }: Props) {
   const [panes, setPanes] = useState<PaneInfo[] | null>(null);
-  const [selected, setSelected] = useState<PaneInfo | null>(null);
+  const [selected, setSelected] = useState<PaneInfo | null>(
+    initialPane
+      ? {
+          id: initialPane.id,
+          label: initialPane.label,
+          cmd: "",
+          active: false,
+          w: 0,
+          h: 0,
+        }
+      : null,
+  );
 
   useEffect(() => {
     const off = onPanes(setPanes);
@@ -126,15 +140,23 @@ function PaneList({
                   onClick={() => onPick(p)}
                   className="flex w-full items-center justify-between rounded-xl bg-white/5 px-4 py-3 text-left active:bg-white/10"
                 >
-                  <span className="flex flex-col">
-                    <span className="font-medium">{p.label}</span>
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate font-medium">{p.label}</span>
                     <span className="font-mono text-xs text-white/45">
                       {p.cmd} · {p.w}×{p.h}
                     </span>
                   </span>
-                  {p.active && (
-                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                  )}
+                  {p.status === "waiting" ? (
+                    <span className="shrink-0 rounded-full bg-amber-400/15 px-2.5 py-0.5 text-xs font-medium text-amber-300">
+                      ⏸ needs you
+                    </span>
+                  ) : p.status === "done" ? (
+                    <span className="shrink-0 rounded-full bg-emerald-400/15 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
+                      ✓ done
+                    </span>
+                  ) : p.active ? (
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
+                  ) : null}
                 </button>
               </li>
             ))}

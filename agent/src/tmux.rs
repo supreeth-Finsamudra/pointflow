@@ -10,6 +10,7 @@
 //! we `tail`). Keystrokes go back through `send-keys -H` (raw hex bytes), so any
 //! key — text, arrows, Ctrl-C — round-trips exactly.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -32,6 +33,9 @@ pub struct PaneInfo {
     pub active: bool,
     pub w: u32,
     pub h: u32,
+    /// Copilot status from Claude Code hooks: "waiting" | "done" | absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 struct Active {
@@ -43,6 +47,8 @@ struct Active {
 pub struct Tmux {
     out_tx: broadcast::Sender<Vec<u8>>,
     active: Mutex<Active>,
+    /// Copilot status per pane id, driven by Claude Code hook events.
+    statuses: Mutex<HashMap<String, String>>,
 }
 
 impl Tmux {
@@ -55,6 +61,7 @@ impl Tmux {
                 tail: None,
                 file: None,
             }),
+            statuses: Mutex::new(HashMap::new()),
         })
     }
 
@@ -86,6 +93,7 @@ impl Tmux {
             Ok(o) if o.status.success() => o.stdout,
             _ => return Vec::new(), // no server / tmux not running
         };
+        let statuses = self.statuses.lock().unwrap();
         String::from_utf8_lossy(&out)
             .lines()
             .filter_map(|line| {
@@ -100,9 +108,26 @@ impl Tmux {
                     active: f[5] == "1",
                     w: f[6].parse().unwrap_or(80),
                     h: f[7].parse().unwrap_or(24),
+                    status: statuses.get(f[0]).cloned(),
                 })
             })
             .collect()
+    }
+
+    /// Human label for a pane id, if it still exists.
+    pub fn pane_label(&self, id: &str) -> Option<String> {
+        self.list_panes()
+            .into_iter()
+            .find(|p| p.id == id)
+            .map(|p| p.label)
+    }
+
+    /// Record a Copilot status ("waiting"/"done") for a pane.
+    pub fn set_status(&self, pane: &str, status: &str) {
+        self.statuses
+            .lock()
+            .unwrap()
+            .insert(pane.to_string(), status.to_string());
     }
 
     /// Select a pane: tear down any previous stream, push a scrollback snapshot,
@@ -161,11 +186,18 @@ impl Tmux {
     pub fn send_keys(&self, bytes: &[u8]) {
         let pane = self.active.lock().unwrap().pane.clone();
         let Some(pane) = pane else { return };
+        self.send_keys_to(&pane, bytes);
+    }
+
+    /// Send raw key bytes to a specific pane (used by notification cards).
+    /// Responding to a pane means the user has handled it — clear its badge.
+    pub fn send_keys_to(&self, pane: &str, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
+        self.statuses.lock().unwrap().remove(pane);
         let mut args: Vec<String> =
-            vec!["send-keys".into(), "-t".into(), pane, "-H".into()];
+            vec!["send-keys".into(), "-t".into(), pane.to_string(), "-H".into()];
         for b in bytes {
             args.push(format!("{b:02x}"));
         }

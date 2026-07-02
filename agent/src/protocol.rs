@@ -47,6 +47,10 @@ pub enum ClientMsg {
     /// Select a tmux pane to view/drive (by pane id, e.g. "%3").
     #[serde(rename = "tsel")]
     TmuxSelect { id: String },
+    /// Send hex-encoded key bytes to a *specific* pane without selecting it
+    /// (used by notification cards: Approve/Deny from anywhere).
+    #[serde(rename = "tkeys")]
+    TmuxKeys { id: String, hex: String },
     /// Keep-alive; no effect.
     Ping,
 }
@@ -78,7 +82,8 @@ impl ClientMsg {
             ClientMsg::Auth { .. }
             | ClientMsg::Ping
             | ClientMsg::TmuxList
-            | ClientMsg::TmuxSelect { .. } => None,
+            | ClientMsg::TmuxSelect { .. }
+            | ClientMsg::TmuxKeys { .. } => None,
             ClientMsg::Move { dx, dy } => Some(InputCmd::Move { dx, dy }),
             ClientMsg::Click { button, double } => Some(InputCmd::Click {
                 button: button.into(),

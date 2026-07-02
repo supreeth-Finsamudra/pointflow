@@ -4,10 +4,12 @@
 //! WebSocket from a phone, translating its messages into real mouse/keyboard
 //! input on this Mac. Requires Accessibility permission.
 
+mod hooks;
 mod input;
 mod protocol;
 mod tmux;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,10 +17,11 @@ use std::sync::Arc;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Query, State,
     },
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use crossbeam_channel::Sender;
@@ -40,6 +43,9 @@ struct AppState {
     tx: Sender<InputCmd>,
     /// Bridge to the user's tmux panes (list, view, drive).
     tmux: Arc<Tmux>,
+    /// Copilot events (from Claude Code hooks) fanned out to phones, as
+    /// ready-to-send JSON strings.
+    events: broadcast::Sender<String>,
 }
 
 #[tokio::main]
@@ -63,12 +69,23 @@ async fn main() {
         return;
     }
 
+    // `--install-hooks` registers Claude Code Notification/Stop hooks that
+    // report to this agent, then exits.
+    if std::env::args().any(|a| a == "--install-hooks") {
+        if let Err(e) = hooks::install(port) {
+            eprintln!("[pointflow] hook install failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // Dedicated thread owns the (non-Send) input engine; we feed it commands.
     let (tx, rx) = crossbeam_channel::unbounded::<InputCmd>();
     std::thread::spawn(move || input::run(rx));
 
     // Bridge to tmux for viewing/driving the user's shells.
     let tmux = Tmux::new();
+    let (events, _) = broadcast::channel::<String>(64);
 
     let web_dir = resolve_web_dir();
     let serve_dir = ServeDir::new(&web_dir).append_index_html_on_directories(true);
@@ -77,10 +94,12 @@ async fn main() {
         token: token.clone(),
         tx,
         tmux,
+        events,
     };
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/event", post(event_handler))
         .fallback_service(serve_dir)
         .with_state(state);
 
@@ -102,6 +121,57 @@ async fn main() {
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+/// Receives Claude Code hook events (see `hooks.rs`) and relays them to phones.
+/// Authenticated with the same session token as the WebSocket (Bearer header or
+/// `?token=`), so nothing on the network can spoof notifications.
+async fn event_handler(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: String,
+) -> StatusCode {
+    let bearer = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::trim);
+    let token = bearer.or(q.get("token").map(String::as_str));
+    if token != Some(state.token.as_str()) {
+        return StatusCode::UNAUTHORIZED;
+    }
+
+    let kind = q.get("kind").map(String::as_str).unwrap_or("notification");
+    let pane = q.get("pane").cloned().unwrap_or_default();
+
+    // The hook forwards Claude Code's JSON on stdin; pull out the human text.
+    let message = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
+        .unwrap_or_else(|| match kind {
+            "stop" => "Claude finished responding".to_string(),
+            _ => "Claude needs your input".to_string(),
+        });
+
+    let label = if pane.is_empty() {
+        None
+    } else {
+        let status = if kind == "stop" { "done" } else { "waiting" };
+        state.tmux.set_status(&pane, status);
+        state.tmux.pane_label(&pane)
+    };
+
+    let event = serde_json::json!({
+        "t": "event",
+        "kind": kind,
+        "pane": pane,
+        "label": label.unwrap_or_else(|| pane.clone()),
+        "message": message,
+    });
+    println!("[pointflow] copilot event: {kind} pane={pane}");
+    let _ = state.events.send(event.to_string());
+    StatusCode::NO_CONTENT
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
@@ -152,6 +222,25 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         })
     };
 
+    // Relay Copilot events (Claude Code hooks) to this phone as JSON text.
+    let events_task = {
+        let mut evs = state.events.subscribe();
+        let out_tx = out_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match evs.recv().await {
+                    Ok(json) => {
+                        if out_tx.send(Message::Text(json)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+    };
+
     // Drain the outgoing queue to the socket.
     let send_task = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
@@ -173,6 +262,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                             let _ = out_tx.send(Message::Text(state.tmux.panes_json()));
                         }
                         ClientMsg::TmuxSelect { id } => state.tmux.select(&id),
+                        ClientMsg::TmuxKeys { id, hex } => {
+                            state.tmux.send_keys_to(&id, &decode_hex(&hex));
+                        }
                         // Channel send only fails if the input thread died.
                         other => {
                             if let Some(cmd) = other.into_cmd() {
@@ -189,8 +281,21 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     state.tmux.stop();
     pump.abort();
+    events_task.abort();
     send_task.abort();
     println!("[pointflow] phone disconnected");
+}
+
+/// Decode a hex string ("0d0a") to bytes; invalid input yields an empty vec.
+fn decode_hex(s: &str) -> Vec<u8> {
+    if s.len() % 2 != 0 {
+        return Vec::new();
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .unwrap_or_default()
 }
 
 /// 16 hex chars of randomness — embedded in the pairing QR/URL.

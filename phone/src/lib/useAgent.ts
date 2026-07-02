@@ -17,10 +17,21 @@ export type PaneInfo = {
   active: boolean;
   w: number;
   h: number;
+  /** Copilot status from Claude Code hooks: "waiting" | "done" | absent. */
+  status?: string;
+};
+
+/** A Copilot event relayed from a Claude Code hook. */
+export type CopilotEvent = {
+  kind: "notification" | "stop" | string;
+  pane: string;
+  label: string;
+  message: string;
 };
 
 export type OutputHandler = (bytes: ArrayBuffer) => void;
 export type PanesHandler = (panes: PaneInfo[]) => void;
+export type EventHandler = (ev: CopilotEvent) => void;
 
 export type Agent = {
   status: Status;
@@ -31,6 +42,8 @@ export type Agent = {
   onOutput: (handler: OutputHandler) => () => void;
   /** Register a handler for the tmux pane list. */
   onPanes: (handler: PanesHandler) => () => void;
+  /** Register a handler for Copilot events (Claude Code needs you / done). */
+  onEvent: (handler: EventHandler) => () => void;
 };
 
 export function useAgent(): Agent {
@@ -39,6 +52,7 @@ export function useAgent(): Agent {
   const tokenRef = useRef<string>("");
   const outRef = useRef<OutputHandler | null>(null);
   const panesRef = useRef<PanesHandler | null>(null);
+  const eventRef = useRef<EventHandler | null>(null);
 
   const send = useCallback<Send>((obj) => {
     const ws = wsRef.current;
@@ -64,6 +78,13 @@ export function useAgent(): Agent {
     };
   }, []);
 
+  const onEvent = useCallback((handler: EventHandler) => {
+    eventRef.current = handler;
+    return () => {
+      if (eventRef.current === handler) eventRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     tokenRef.current = params.get("token") ?? "";
@@ -86,6 +107,7 @@ export function useAgent(): Agent {
             if (m.t === "ok") setStatus("connected");
             else if (m.t === "denied") setStatus("denied");
             else if (m.t === "panes") panesRef.current?.(m.panes ?? []);
+            else if (m.t === "event") eventRef.current?.(m);
           } catch {
             /* ignore */
           }
@@ -109,5 +131,5 @@ export function useAgent(): Agent {
     };
   }, []);
 
-  return { status, send, sendBytes, onOutput, onPanes };
+  return { status, send, sendBytes, onOutput, onPanes, onEvent };
 }

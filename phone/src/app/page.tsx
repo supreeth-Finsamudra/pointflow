@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ControlButtons } from "../components/ControlButtons";
+import { CopilotCard } from "../components/CopilotCard";
 import { ScrollStrip } from "../components/ScrollStrip";
 import { SettingsSheet } from "../components/SettingsSheet";
 import { StatusBar } from "../components/StatusBar";
@@ -9,7 +10,7 @@ import { TerminalSheet } from "../components/TerminalSheet";
 import { TextBar } from "../components/TextBar";
 import { Trackpad } from "../components/Trackpad";
 import { SettingsProvider } from "../lib/settings";
-import { useAgent } from "../lib/useAgent";
+import { useAgent, type CopilotEvent } from "../lib/useAgent";
 
 export default function Page() {
   return (
@@ -20,16 +21,36 @@ export default function Page() {
 }
 
 function App() {
-  const { status, send, sendBytes, onOutput, onPanes } = useAgent();
+  const { status, send, sendBytes, onOutput, onPanes, onEvent } = useAgent();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [termOpen, setTermOpen] = useState(false);
+  const [event, setEvent] = useState<CopilotEvent | null>(null);
+  // Pane to auto-open (set by a card's "Open shell"); keying the sheet on it
+  // remounts straight into that pane.
+  const [jumpPane, setJumpPane] = useState<{ id: string; label: string } | null>(
+    null,
+  );
+
+  useEffect(
+    () =>
+      onEvent((ev) => {
+        setEvent(ev);
+        // Android vibrates; iOS Safari ignores this (no vibration API).
+        navigator.vibrate?.(200);
+      }),
+    [onEvent],
+  );
 
   return (
     <main className="flex h-dvh flex-col gap-3 p-3">
       <StatusBar
         status={status}
+        alert={event !== null}
         onSettings={() => setSettingsOpen(true)}
-        onTerminal={() => setTermOpen(true)}
+        onTerminal={() => {
+          setJumpPane(null);
+          setTermOpen(true);
+        }}
       />
       <div className="flex min-h-0 flex-1 gap-3">
         <Trackpad send={send} />
@@ -40,12 +61,28 @@ function App() {
       <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {termOpen && (
         <TerminalSheet
-          onClose={() => setTermOpen(false)}
+          key={jumpPane?.id ?? "picker"}
+          onClose={() => {
+            setTermOpen(false);
+            setJumpPane(null);
+          }}
           status={status}
           send={send}
           sendBytes={sendBytes}
           onOutput={onOutput}
           onPanes={onPanes}
+          initialPane={jumpPane}
+        />
+      )}
+      {event && (
+        <CopilotCard
+          event={event}
+          send={send}
+          onOpen={(pane) => {
+            setJumpPane(pane);
+            setTermOpen(true);
+          }}
+          onDismiss={() => setEvent(null)}
         />
       )}
     </main>

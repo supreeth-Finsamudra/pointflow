@@ -18,10 +18,13 @@ const DOT: Record<Status, string> = {
 
 export function StatusBar({
   status,
+  alert = false,
   onSettings,
   onTerminal,
 }: {
   status: Status;
+  /** A Copilot event is pending — badge the terminal button. */
+  alert?: boolean;
   onSettings: () => void;
   onTerminal: () => void;
 }) {
@@ -37,9 +40,12 @@ export function StatusBar({
           type="button"
           aria-label="Terminal"
           onClick={onTerminal}
-          className="select-none rounded-lg bg-emerald-400/10 px-2 py-0.5 font-mono text-sm leading-none text-emerald-300/90 active:bg-emerald-400/20"
+          className="relative select-none rounded-lg bg-emerald-400/10 px-2 py-0.5 font-mono text-sm leading-none text-emerald-300/90 active:bg-emerald-400/20"
         >
           {">_"}
+          {alert && (
+            <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-amber-400" />
+          )}
         </button>
         <button
           type="button"

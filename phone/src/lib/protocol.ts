@@ -23,4 +23,7 @@ export const msg = {
   // back as raw binary too (not through these JSON builders).
   tlist: () => ({ t: "tlist" }),
   tsel: (id: string) => ({ t: "tsel", id }),
+  // Send hex-encoded key bytes to a specific pane without selecting it
+  // (Approve/Deny on notification cards).
+  tkeys: (id: string, hex: string) => ({ t: "tkeys", id, hex }),
 };
