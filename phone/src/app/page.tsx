@@ -21,7 +21,8 @@ export default function Page() {
 }
 
 function App() {
-  const { status, send, sendBytes, onOutput, onPanes, onEvent } = useAgent();
+  const { status, send, sendBytes, onOutput, onPanes, onEvent, onTabs, onTabText } =
+    useAgent();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [termOpen, setTermOpen] = useState(false);
   const [event, setEvent] = useState<CopilotEvent | null>(null);
@@ -71,6 +72,8 @@ function App() {
           sendBytes={sendBytes}
           onOutput={onOutput}
           onPanes={onPanes}
+          onTabs={onTabs}
+          onTabText={onTabText}
           initialPane={jumpPane}
         />
       )}

@@ -55,6 +55,16 @@ pub enum ClientMsg {
     /// (used by notification cards: Approve/Deny from anywhere).
     #[serde(rename = "tkeys")]
     TmuxKeys { id: String, hex: String },
+    /// Ask for the list of open Terminal.app tabs (no tmux required).
+    #[serde(rename = "tablist")]
+    TabList,
+    /// Select a Terminal.app tab to view: streams its screen and focuses it so
+    /// typed keystrokes (existing injection path) land in it.
+    #[serde(rename = "tabsel")]
+    TabSelect { win: i64, tab: i64 },
+    /// Stop streaming the Terminal.app tab.
+    #[serde(rename = "tabstop")]
+    TabStop,
     /// Keep-alive; no effect.
     Ping,
 }
@@ -88,7 +98,10 @@ impl ClientMsg {
             | ClientMsg::TmuxList
             | ClientMsg::TmuxSelect { .. }
             | ClientMsg::TmuxResize { .. }
-            | ClientMsg::TmuxKeys { .. } => None,
+            | ClientMsg::TmuxKeys { .. }
+            | ClientMsg::TabList
+            | ClientMsg::TabSelect { .. }
+            | ClientMsg::TabStop => None,
             ClientMsg::Move { dx, dy } => Some(InputCmd::Move { dx, dy }),
             ClientMsg::Click { button, double } => Some(InputCmd::Click {
                 button: button.into(),

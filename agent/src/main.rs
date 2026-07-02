@@ -7,6 +7,7 @@
 mod hooks;
 mod input;
 mod protocol;
+mod tabs;
 mod tmux;
 
 use std::collections::HashMap;
@@ -32,6 +33,7 @@ use tower_http::services::ServeDir;
 
 use input::InputCmd;
 use protocol::ClientMsg;
+use tabs::Tabs;
 use tmux::Tmux;
 
 /// Default listen port. Override with POINTFLOW_PORT.
@@ -43,9 +45,11 @@ struct AppState {
     tx: Sender<InputCmd>,
     /// Bridge to the user's tmux panes (list, view, drive).
     tmux: Arc<Tmux>,
-    /// Copilot events (from Claude Code hooks) fanned out to phones, as
-    /// ready-to-send JSON strings.
+    /// Copilot events (from Claude Code hooks) and Terminal-tab streams fanned
+    /// out to phones, as ready-to-send JSON strings.
     events: broadcast::Sender<String>,
+    /// Bridge to already-open Terminal.app tabs (no tmux required).
+    tabs: Arc<Tabs>,
 }
 
 #[tokio::main]
@@ -86,6 +90,8 @@ async fn main() {
     // Bridge to tmux for viewing/driving the user's shells.
     let tmux = Tmux::new();
     let (events, _) = broadcast::channel::<String>(64);
+    // Bridge to already-open Terminal.app tabs; streams share the events pipe.
+    let tabs = Tabs::start(events.clone());
 
     let web_dir = resolve_web_dir();
     let serve_dir = ServeDir::new(&web_dir).append_index_html_on_directories(true);
@@ -95,6 +101,7 @@ async fn main() {
         tx,
         tmux,
         events,
+        tabs,
     };
 
     let app = Router::new()
@@ -268,6 +275,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         ClientMsg::TmuxKeys { id, hex } => {
                             state.tmux.send_keys_to(&id, &decode_hex(&hex));
                         }
+                        ClientMsg::TabList => {
+                            let _ = out_tx.send(Message::Text(state.tabs.tabs_json()));
+                        }
+                        ClientMsg::TabSelect { win, tab } => state.tabs.select(win, tab),
+                        ClientMsg::TabStop => state.tabs.stop(),
                         // Channel send only fails if the input thread died.
                         other => {
                             if let Some(cmd) = other.into_cmd() {
@@ -283,6 +295,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     }
 
     state.tmux.stop();
+    state.tabs.stop();
     pump.abort();
     events_task.abort();
     send_task.abort();

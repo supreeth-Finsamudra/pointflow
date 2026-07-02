@@ -29,9 +29,22 @@ export type CopilotEvent = {
   message: string;
 };
 
+/** An open Terminal.app tab (no tmux needed). */
+export type TabInfo = {
+  win: number;
+  tab: number;
+  tty: string;
+  busy: boolean;
+  procs: string;
+  claude: boolean;
+};
+
 export type OutputHandler = (bytes: ArrayBuffer) => void;
 export type PanesHandler = (panes: PaneInfo[]) => void;
 export type EventHandler = (ev: CopilotEvent) => void;
+export type TabsHandler = (tabs: TabInfo[]) => void;
+/** kind: "hist" = one-time scrollback replay, "scr" = current screen. */
+export type TabTextHandler = (kind: "hist" | "scr", text: string) => void;
 
 export type Agent = {
   status: Status;
@@ -44,6 +57,10 @@ export type Agent = {
   onPanes: (handler: PanesHandler) => () => void;
   /** Register a handler for Copilot events (Claude Code needs you / done). */
   onEvent: (handler: EventHandler) => () => void;
+  /** Register a handler for the Terminal.app tab list. */
+  onTabs: (handler: TabsHandler) => () => void;
+  /** Register a handler for a selected tab's text (history + screen). */
+  onTabText: (handler: TabTextHandler) => () => void;
 };
 
 export function useAgent(): Agent {
@@ -53,6 +70,8 @@ export function useAgent(): Agent {
   const outRef = useRef<OutputHandler | null>(null);
   const panesRef = useRef<PanesHandler | null>(null);
   const eventRef = useRef<EventHandler | null>(null);
+  const tabsRef = useRef<TabsHandler | null>(null);
+  const tabTextRef = useRef<TabTextHandler | null>(null);
 
   const send = useCallback<Send>((obj) => {
     const ws = wsRef.current;
@@ -85,6 +104,20 @@ export function useAgent(): Agent {
     };
   }, []);
 
+  const onTabs = useCallback((handler: TabsHandler) => {
+    tabsRef.current = handler;
+    return () => {
+      if (tabsRef.current === handler) tabsRef.current = null;
+    };
+  }, []);
+
+  const onTabText = useCallback((handler: TabTextHandler) => {
+    tabTextRef.current = handler;
+    return () => {
+      if (tabTextRef.current === handler) tabTextRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     tokenRef.current = params.get("token") ?? "";
@@ -108,6 +141,9 @@ export function useAgent(): Agent {
             else if (m.t === "denied") setStatus("denied");
             else if (m.t === "panes") panesRef.current?.(m.panes ?? []);
             else if (m.t === "event") eventRef.current?.(m);
+            else if (m.t === "tabs") tabsRef.current?.(m.tabs ?? []);
+            else if (m.t === "tabhist") tabTextRef.current?.("hist", m.text ?? "");
+            else if (m.t === "tabscr") tabTextRef.current?.("scr", m.text ?? "");
           } catch {
             /* ignore */
           }
@@ -131,5 +167,5 @@ export function useAgent(): Agent {
     };
   }, []);
 
-  return { status, send, sendBytes, onOutput, onPanes, onEvent };
+  return { status, send, sendBytes, onOutput, onPanes, onEvent, onTabs, onTabText };
 }

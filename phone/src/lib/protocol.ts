@@ -27,4 +27,9 @@ export const msg = {
   // Send hex-encoded key bytes to a specific pane without selecting it
   // (Approve/Deny on notification cards).
   tkeys: (id: string, hex: string) => ({ t: "tkeys", id, hex }),
+  // Terminal.app tabs bridge (no tmux). Screen arrives as {"t":"tabscr"} text;
+  // typing uses the regular text/key/chord injection (tab gets focused).
+  tablist: () => ({ t: "tablist" }),
+  tabsel: (win: number, tab: number) => ({ t: "tabsel", win, tab }),
+  tabstop: () => ({ t: "tabstop" }),
 };

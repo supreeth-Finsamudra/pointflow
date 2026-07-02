@@ -1,9 +1,11 @@
 "use client";
 
-// tmux terminal sheet. First a picker of every tmux pane; tap one to open it in
-// xterm.js with full scrollback, type into it (raw bytes → tmux send-keys), and
-// scroll its history. xterm is dynamically imported so it never runs during the
-// static build.
+// Terminal sheet. The picker lists BOTH kinds of shells:
+//  • Terminal.app tabs — whatever is ALREADY open on the Mac (zero setup;
+//    plain-text view polled from Terminal, typing via focus + injection);
+//  • tmux panes — full-fidelity xterm.js attach (colors, TUIs, live resize).
+// Tap one to open its viewer. xterm is dynamically imported so it never runs
+// during the static build.
 
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
@@ -13,7 +15,11 @@ import type {
   PaneInfo,
   PanesHandler,
   Status,
+  TabInfo,
+  TabTextHandler,
+  TabsHandler,
 } from "../lib/useAgent";
+import { TextBar } from "./TextBar";
 
 type Props = {
   onClose: () => void;
@@ -22,6 +28,8 @@ type Props = {
   sendBytes: (bytes: Uint8Array) => void;
   onOutput: (handler: OutputHandler) => () => void;
   onPanes: (handler: PanesHandler) => () => void;
+  onTabs: (handler: TabsHandler) => () => void;
+  onTabText: (handler: TabTextHandler) => () => void;
   /** Jump straight into this pane (from a Copilot card's "Open shell"). */
   initialPane?: { id: string; label: string } | null;
 };
@@ -33,9 +41,13 @@ export function TerminalSheet({
   sendBytes,
   onOutput,
   onPanes,
+  onTabs,
+  onTabText,
   initialPane,
 }: Props) {
   const [panes, setPanes] = useState<PaneInfo[] | null>(null);
+  const [tabs, setTabs] = useState<TabInfo[] | null>(null);
+  const [selectedTab, setSelectedTab] = useState<TabInfo | null>(null);
   const [selected, setSelected] = useState<PaneInfo | null>(
     initialPane
       ? {
@@ -50,15 +62,28 @@ export function TerminalSheet({
   );
 
   useEffect(() => {
-    const off = onPanes(setPanes);
+    const offPanes = onPanes(setPanes);
+    const offTabs = onTabs(setTabs);
     send(msg.tlist());
-    return off;
-  }, [onPanes, send]);
+    send(msg.tablist());
+    return () => {
+      offPanes();
+      offTabs();
+    };
+  }, [onPanes, onTabs, send]);
 
-  // Refresh the list whenever we (re)connect and aren't inside a pane.
+  const refresh = () => {
+    send(msg.tlist());
+    send(msg.tablist());
+  };
+
+  // Refresh the lists whenever we (re)connect and aren't inside a viewer.
   useEffect(() => {
-    if (status === "connected" && !selected) send(msg.tlist());
-  }, [status, selected, send]);
+    if (status === "connected" && !selected && !selectedTab) {
+      send(msg.tlist());
+      send(msg.tablist());
+    }
+  }, [status, selected, selectedTab, send]);
 
   if (selected) {
     return (
@@ -73,11 +98,24 @@ export function TerminalSheet({
       />
     );
   }
+  if (selectedTab) {
+    return (
+      <TabView
+        tab={selectedTab}
+        send={send}
+        onTabText={onTabText}
+        onBack={() => setSelectedTab(null)}
+        onClose={onClose}
+      />
+    );
+  }
   return (
     <PaneList
       panes={panes}
-      onRefresh={() => send(msg.tlist())}
+      tabs={tabs}
+      onRefresh={refresh}
       onPick={setSelected}
+      onPickTab={setSelectedTab}
       onClose={onClose}
     />
   );
@@ -85,13 +123,17 @@ export function TerminalSheet({
 
 function PaneList({
   panes,
+  tabs,
   onRefresh,
   onPick,
+  onPickTab,
   onClose,
 }: {
   panes: PaneInfo[] | null;
+  tabs: TabInfo[] | null;
   onRefresh: () => void;
   onPick: (p: PaneInfo) => void;
+  onPickTab: (t: TabInfo) => void;
   onClose: () => void;
 }) {
   return (
@@ -119,17 +161,59 @@ function PaneList({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto px-3 pb-4">
+        {/* Already-open Terminal.app tabs — zero setup */}
+        <p className="mb-2 mt-2 text-xs font-semibold uppercase tracking-wide text-white/40">
+          Terminal tabs
+        </p>
+        {tabs === null ? (
+          <p className="text-sm text-white/40">Loading…</p>
+        ) : tabs.length === 0 ? (
+          <p className="text-sm text-white/40">No Terminal windows open.</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {tabs.map((t) => (
+              <li key={`${t.win}:${t.tab}`}>
+                <button
+                  type="button"
+                  onClick={() => onPickTab(t)}
+                  className="flex w-full items-center justify-between rounded-xl bg-white/5 px-4 py-3 text-left active:bg-white/10"
+                >
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate font-medium">
+                      {t.procs || "shell (idle)"}
+                    </span>
+                    <span className="font-mono text-xs text-white/45">
+                      {t.tty} · window {t.win} tab {t.tab}
+                    </span>
+                  </span>
+                  {t.claude ? (
+                    <span className="shrink-0 rounded-full bg-violet-400/15 px-2.5 py-0.5 text-xs font-medium text-violet-300">
+                      ✳ claude
+                    </span>
+                  ) : t.busy ? (
+                    <span className="shrink-0 rounded-full bg-emerald-400/15 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
+                      ● running
+                    </span>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* tmux panes — full-fidelity mode */}
+        <p className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-white/40">
+          tmux shells (best quality)
+        </p>
         {panes === null ? (
-          <p className="mt-8 text-center text-sm text-white/40">Loading…</p>
+          <p className="text-sm text-white/40">Loading…</p>
         ) : panes.length === 0 ? (
-          <div className="mt-8 px-4 text-center text-sm leading-relaxed text-white/50">
-            No tmux panes found.
-            <br />
-            On your Mac, start one and run Claude Code inside it:
-            <pre className="mt-3 rounded-lg bg-white/5 px-3 py-2 text-left font-mono text-xs text-emerald-300/80">
+          <div className="text-sm leading-relaxed text-white/50">
+            None yet — for the crispest view (colors, live TUIs), run on the
+            Mac:
+            <pre className="mt-2 rounded-lg bg-white/5 px-3 py-2 font-mono text-xs text-emerald-300/80">
               tmux new -s work{"\n"}claude
             </pre>
-            then tap Refresh.
           </div>
         ) : (
           <ul className="flex flex-col gap-2">
@@ -162,6 +246,122 @@ function PaneList({
             ))}
           </ul>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Plain-text live view of an already-open Terminal.app tab. The tab is
+ *  focused on the Mac, so typing (TextBar/keys) uses the injection path. */
+function TabView({
+  tab,
+  send,
+  onTabText,
+  onBack,
+  onClose,
+}: {
+  tab: TabInfo;
+  send: Send;
+  onTabText: (h: TabTextHandler) => () => void;
+  onBack: () => void;
+  onClose: () => void;
+}) {
+  const [hist, setHist] = useState("");
+  const [screen, setScreen] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const [viewH, setViewH] = useState<number | null>(null);
+
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const update = () =>
+      setViewH(vv ? Math.round(vv.height) : window.innerHeight);
+    update();
+    vv?.addEventListener("resize", update);
+    window.addEventListener("resize", update);
+    return () => {
+      vv?.removeEventListener("resize", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    const off = onTabText((kind, text) => {
+      if (kind === "hist") setHist(text);
+      else setScreen(text);
+    });
+    send(msg.tabsel(tab.win, tab.tab));
+    return () => {
+      off();
+      send(msg.tabstop());
+    };
+  }, [tab, send, onTabText]);
+
+  // Keep pinned to the bottom unless the user scrolled up to read history.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [hist, screen]);
+
+  return (
+    <div
+      className="fixed left-0 top-0 z-50 flex w-full flex-col bg-[#0a0a0a]"
+      style={{ height: viewH ? `${viewH}px` : "100dvh" }}
+    >
+      <div className="flex items-center justify-between px-3 py-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
+        >
+          ‹ Shells
+        </button>
+        <span className="truncate px-2 font-mono text-xs text-white/60">
+          {tab.procs || tab.tty}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="select-none rounded-lg bg-white/10 px-3 py-1 text-sm text-white/80 active:bg-white/20"
+        >
+          Done
+        </button>
+      </div>
+
+      <div
+        ref={scrollRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          pinned.current =
+            el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+        }}
+        className="min-h-0 flex-1 overflow-y-auto px-2"
+        style={{ touchAction: "pan-y" }}
+      >
+        <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-white/50">
+          {hist}
+        </pre>
+        <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-white/90">
+          {screen || "Connecting to tab…"}
+        </pre>
+      </div>
+
+      {/* quick keys via the injection path (tab is focused on the Mac) */}
+      <div className="flex items-center gap-1.5 overflow-x-auto px-2 py-2">
+        <KeyBtn onPress={() => send(msg.key("escape"))}>Esc</KeyBtn>
+        <KeyBtn onPress={() => send(msg.key("tab"))}>Tab</KeyBtn>
+        <KeyBtn onPress={() => send(msg.key("enter"))}>⏎</KeyBtn>
+        <KeyBtn onPress={() => send(msg.key("up"))}>↑</KeyBtn>
+        <KeyBtn onPress={() => send(msg.key("down"))}>↓</KeyBtn>
+        <KeyBtn onPress={() => send(msg.key("left"))}>←</KeyBtn>
+        <KeyBtn onPress={() => send(msg.key("right"))}>→</KeyBtn>
+        <KeyBtn onPress={() => send(msg.chord(["ctrl"], "c"))}>⌃C</KeyBtn>
+        <KeyBtn onPress={() => send(msg.tabsel(tab.win, tab.tab))}>Focus</KeyBtn>
+      </div>
+
+      {/* typing → injected into the focused tab */}
+      <div className="px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <TextBar send={send} />
       </div>
     </div>
   );
