@@ -7,7 +7,7 @@
 // Tap one to open its viewer. xterm is dynamically imported so it never runs
 // during the static build.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { Send, msg } from "../lib/protocol";
 import type {
@@ -48,7 +48,13 @@ function SheetShell({ children }: { children: React.ReactNode }) {
     <div className="fixed inset-0 z-50 bg-[#050508]">
       <div
         className="absolute left-0 flex w-full flex-col"
-        style={{ top, height: h ? `${h}px` : "100%" }}
+        style={{
+          top,
+          height: h ? `${h}px` : "100%",
+          // Installed PWA draws under the iOS status bar; keep the sheet
+          // header (and its buttons) tappable below it.
+          paddingTop: "env(safe-area-inset-top)",
+        }}
       >
         {children}
       </div>
@@ -397,12 +403,8 @@ function TabView({
           className="pf-selectable min-h-0 flex-1 overflow-y-auto px-3 pt-2"
           style={{ touchAction: "pan-y" }}
         >
-          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-white/45">
-            {hist}
-          </pre>
-          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-white/90">
-            {screen || "Connecting to tab…"}
-          </pre>
+          <ColorText text={hist} dim />
+          <ColorText text={screen || "Connecting to tab…"} />
         </div>
 
         {/* quick keys via the injection path (tab is focused on the Mac) */}
@@ -708,6 +710,37 @@ function KeyBtn({
     >
       {children}
     </button>
+  );
+}
+
+/** Terminal.app's scripting API strips ANSI colors, so re-colorize what
+ *  matters most: diff lines. Claude Code edit diffs ("  42 +  code"), unified
+ *  diffs ("+added"/"-removed"), and hunk headers get their colors back. */
+function ColorText({ text, dim = false }: { text: string; dim?: boolean }) {
+  const lines = useMemo(() => text.split("\n"), [text]);
+  return (
+    <pre
+      className={`whitespace-pre-wrap break-words font-mono text-[11px] leading-snug ${
+        dim ? "text-white/45" : "text-white/90"
+      }`}
+    >
+      {lines.map((l, i) => {
+        let cls = "";
+        if (/^\s*\d+\s*\+/.test(l) || /^\+(?!\+\+)/.test(l))
+          cls = "text-emerald-400";
+        else if (/^\s*\d+\s*-/.test(l) || /^-(?!--)/.test(l))
+          cls = "text-red-400";
+        else if (/^\s*@@/.test(l)) cls = "text-cyan-300";
+        const body = l + "\n";
+        return cls ? (
+          <span key={i} className={cls}>
+            {body}
+          </span>
+        ) : (
+          body
+        );
+      })}
+    </pre>
   );
 }
 

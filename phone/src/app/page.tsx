@@ -88,7 +88,14 @@ function App() {
   };
 
   return (
-    <main className="flex h-dvh flex-col gap-3 p-3">
+    <main
+      className="flex h-dvh flex-col gap-3 p-3"
+      style={{
+        // Installed PWA draws under the iOS status bar; keep controls below it.
+        paddingTop: "max(0.75rem, env(safe-area-inset-top))",
+        paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))",
+      }}
+    >
       <StatusBar
         status={status}
         alert={event !== null}
