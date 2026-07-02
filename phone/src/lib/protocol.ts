@@ -33,4 +33,13 @@ export const msg = {
   tablist: () => ({ t: "tablist" }),
   tabsel: (win: number, tab: number) => ({ t: "tabsel", win, tab }),
   tabstop: () => ({ t: "tabstop" }),
+  // Type a line (+newline) into a tab via Apple Events — no focus needed,
+  // works behind the lock screen.
+  tabtype: (win: number, tab: number, text: string) => ({
+    t: "tabtype",
+    win,
+    tab,
+    text,
+  }),
+  tabfocus: (win: number, tab: number) => ({ t: "tabfocus", win, tab }),
 };

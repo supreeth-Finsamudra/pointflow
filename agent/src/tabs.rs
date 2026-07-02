@@ -82,16 +82,26 @@ impl Tabs {
         .unwrap_or_else(|_| "{\"t\":\"tabs\",\"tabs\":[]}".to_string())
     }
 
-    /// Select a tab: replay its scrollback history once, focus it on the Mac
-    /// (so typed keystrokes land in it), then let the poll loop stream the
-    /// screen.
+    /// Select a tab: replay its scrollback history once, then let the poll
+    /// loop stream the screen. Typing goes through `type_line` (Apple Events,
+    /// no focus needed), so selection no longer steals the Mac's focus.
     pub fn select(&self, win: i64, tab: i64) {
         if let Some(hist) = read_tab_text(win, tab, "history") {
             let tail = tail_chars(&hist, HISTORY_CAP);
             let _ = self.out_tx.send(json_text("tabhist", tail));
         }
-        self.focus(win, tab);
         *self.sel.lock().unwrap() = Some(Sel { win, tab });
+    }
+
+    /// Write a line of text (plus newline) straight into the tab's tty via
+    /// `do script` — reaches the running program's stdin without focusing the
+    /// window, and keeps working behind the lock screen.
+    pub fn type_line(&self, win: i64, tab: i64, text: &str) {
+        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "tell application \"Terminal\" to do script \"{escaped}\" in tab {tab} of window id {win}"
+        );
+        let _ = Command::new("/usr/bin/osascript").arg("-e").arg(script).output();
     }
 
     /// Bring the tab frontmost so injected keystrokes reach it.

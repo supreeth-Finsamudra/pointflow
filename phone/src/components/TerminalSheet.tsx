@@ -380,18 +380,16 @@ function TabView({
   // or a restore-on-reload that mounted before the socket opened — re-select.
   const skipNextConnect = useRef(status === "connected");
 
-  // Send the composed draft into the tab. Inner newlines become Claude Code's
-  // backslash+Enter (line break without submitting); the final Enter submits.
+  // Send the composed draft into the tab via Apple Events (tabtype) — no
+  // focus needed, works behind the lock screen. Each tabtype adds a newline;
+  // a trailing backslash makes Claude Code treat it as a line break, so the
+  // final line's newline is the submit.
   const sendDraft = (text: string) => {
     const lines = text.split("\n");
     lines.forEach((line, i) => {
-      if (line) send(msg.text(line));
-      if (i < lines.length - 1) {
-        send(msg.text("\\"));
-        send(msg.key("enter"));
-      }
+      const last = i === lines.length - 1;
+      send(msg.tabtype(tab.win, tab.tab, last ? line : `${line}\\`));
     });
-    send(msg.key("enter"));
   };
 
   useEffect(() => {
@@ -464,7 +462,7 @@ function TabView({
           <KeyBtn onPress={() => send(msg.key("left"))}>←</KeyBtn>
           <KeyBtn onPress={() => send(msg.key("right"))}>→</KeyBtn>
           <KeyBtn onPress={() => send(msg.chord(["ctrl"], "c"))}>⌃C</KeyBtn>
-          <KeyBtn onPress={() => send(msg.tabsel(tab.win, tab.tab))}>
+          <KeyBtn onPress={() => send(msg.tabfocus(tab.win, tab.tab))}>
             Focus
           </KeyBtn>
         </div>

@@ -68,6 +68,13 @@ pub enum ClientMsg {
     /// Stop streaming the Terminal.app tab.
     #[serde(rename = "tabstop")]
     TabStop,
+    /// Type a line (plus newline) into a tab via Apple Events — works without
+    /// focus and behind the lock screen.
+    #[serde(rename = "tabtype")]
+    TabType { win: i64, tab: i64, text: String },
+    /// Bring a tab to the front (needed only for the raw quick keys).
+    #[serde(rename = "tabfocus")]
+    TabFocus { win: i64, tab: i64 },
     /// Keep-alive; no effect.
     Ping,
 }
@@ -105,7 +112,9 @@ impl ClientMsg {
             | ClientMsg::TmuxNew
             | ClientMsg::TabList
             | ClientMsg::TabSelect { .. }
-            | ClientMsg::TabStop => None,
+            | ClientMsg::TabStop
+            | ClientMsg::TabType { .. }
+            | ClientMsg::TabFocus { .. } => None,
             ClientMsg::Move { dx, dy } => Some(InputCmd::Move { dx, dy }),
             ClientMsg::Click { button, double } => Some(InputCmd::Click {
                 button: button.into(),

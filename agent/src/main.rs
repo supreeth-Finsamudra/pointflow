@@ -399,6 +399,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         }
                         ClientMsg::TabSelect { win, tab } => state.tabs.select(win, tab),
                         ClientMsg::TabStop => state.tabs.stop(),
+                        ClientMsg::TabType { win, tab, text } => {
+                            state.tabs.type_line(win, tab, &text)
+                        }
+                        ClientMsg::TabFocus { win, tab } => state.tabs.focus(win, tab),
                         // Channel send only fails if the input thread died.
                         other => {
                             if let Some(cmd) = other.into_cmd() {
