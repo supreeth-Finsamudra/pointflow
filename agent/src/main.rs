@@ -114,6 +114,14 @@ async fn main() {
 
     print_banner(&url, &web_dir);
 
+    // `--tunnel`: also expose the agent at a public HTTPS URL via a Cloudflare
+    // quick tunnel — works from any network, no VPN on the phone. The session
+    // token still gates every connection.
+    if std::env::args().any(|a| a == "--tunnel") {
+        let token = token.clone();
+        tokio::spawn(async move { run_tunnel(port, token).await });
+    }
+
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
@@ -345,6 +353,69 @@ async fn upload_handler(
         StatusCode::OK,
         serde_json::json!({ "path": path.to_string_lossy() }).to_string(),
     )
+}
+
+/// Spawn `cloudflared` as a quick tunnel to this agent and print the public
+/// pairing QR/URL once the edge assigns one. Runs for the agent's lifetime.
+async fn run_tunnel(port: u16, token: String) {
+    let bin = ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"]
+        .iter()
+        .find(|p| Path::new(p).exists())
+        .copied()
+        .unwrap_or("cloudflared");
+
+    let mut child = match tokio::process::Command::new(bin)
+        .args([
+            "tunnel",
+            "--url",
+            &format!("http://127.0.0.1:{port}"),
+            "--no-autoupdate",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!(
+                "[pointflow] --tunnel needs cloudflared: brew install cloudflared"
+            );
+            return;
+        }
+    };
+
+    let Some(stderr) = child.stderr.take() else { return };
+    let mut lines = tokio::io::BufReader::new(stderr);
+    let mut announced = false;
+    let mut line = String::new();
+    use tokio::io::AsyncBufReadExt;
+    loop {
+        line.clear();
+        match lines.read_line(&mut line).await {
+            Ok(0) => break, // cloudflared exited
+            Ok(_) => {
+                if announced {
+                    continue;
+                }
+                if let Some(url) = extract_tunnel_url(&line) {
+                    announced = true;
+                    println!("\n  ✦ Public tunnel ready — works from ANY network:\n");
+                    print_qr(&format!("{url}/?token={token}"));
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    eprintln!("[pointflow] tunnel closed (cloudflared exited)");
+}
+
+/// Pull "https://xxx.trycloudflare.com" out of a cloudflared log line.
+fn extract_tunnel_url(line: &str) -> Option<String> {
+    let start = line.find("https://")?;
+    let rest = &line[start..];
+    let end = rest.find(".trycloudflare.com")? + ".trycloudflare.com".len();
+    Some(rest[..end].to_string())
 }
 
 /// Decode a hex string ("0d0a") to bytes; invalid input yields an empty vec.
