@@ -15,8 +15,12 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-/// Marker present in our hook commands; used to detect existing installs.
+/// Where the unix hook command reads the pairing token from at runtime.
+#[cfg(unix)]
 const MARKER: &str = ".pointflow/token";
+/// Substring present in every PointFlow hook command (all platforms); used to
+/// detect existing installs so re-running stays idempotent.
+const DETECT: &str = "/event?kind=";
 
 pub fn install(port: u16) -> Result<(), String> {
     let path = settings_path().ok_or("could not resolve $HOME")?;
@@ -56,7 +60,7 @@ pub fn install(port: u16) -> Result<(), String> {
                 .as_array()
                 .map(|hs| {
                     hs.iter().any(|h| {
-                        h["command"].as_str().is_some_and(|c| c.contains(MARKER))
+                        h["command"].as_str().is_some_and(|c| c.contains(DETECT))
                     })
                 })
                 .unwrap_or(false)
@@ -94,6 +98,7 @@ pub fn install(port: u16) -> Result<(), String> {
 /// the pane the session lives in (empty outside tmux); the token is read from
 /// the agent's persisted pairing token so the endpoint stays authenticated.
 /// Fails silently (agent not running is fine).
+#[cfg(unix)]
 fn hook_command(port: u16, kind: &str) -> String {
     format!(
         "curl -s -m 2 -X POST \"http://127.0.0.1:{port}/event?kind={kind}&pane=$TMUX_PANE\" \
@@ -102,6 +107,24 @@ fn hook_command(port: u16, kind: &str) -> String {
     )
 }
 
+/// Windows: hooks may run under cmd.exe, PowerShell, or Git Bash, so the
+/// command must be shell-agnostic — no `$(...)`, env expansion, or redirects.
+/// The pairing token is embedded at install time instead of read at runtime
+/// (it lives in plaintext in ~/.pointflow/token either way, and re-running
+/// `--install-hooks` refreshes it). No tmux on Windows, so `pane` stays empty
+/// and events carry the project-folder label from the hook's JSON `cwd`.
+#[cfg(windows)]
+fn hook_command(port: u16, kind: &str) -> String {
+    let token = crate::util::state_dir()
+        .and_then(|d| std::fs::read_to_string(d.join("token")).ok())
+        .map(|t| t.trim().to_string())
+        .unwrap_or_default();
+    format!(
+        "curl -s -m 2 -X POST \"http://127.0.0.1:{port}/event?kind={kind}&pane=\" \
+         -H \"Authorization: Bearer {token}\" --data-binary @-"
+    )
+}
+
 fn settings_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude").join("settings.json"))
+    crate::util::home_dir().map(|h| h.join(".claude").join("settings.json"))
 }

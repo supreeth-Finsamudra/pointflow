@@ -2,7 +2,7 @@
 name = "pointflow-agent"
 version = "0.1.0"
 edition = "2021"
-description = "PointFlow desktop agent — serves the phone UI and injects mouse/keyboard input on macOS"
+description = "PointFlow desktop agent — serves the phone UI and injects mouse/keyboard input on macOS and Windows"
 
 [[bin]]
 name = "pointflow-agent"
@@ -13,7 +13,6 @@ tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.5", features = ["fs", "trace"] }
 enigo = "0.2"
-core-graphics = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 crossbeam-channel = "0.5"
@@ -22,7 +21,25 @@ local-ip-address = "0.6"
 rand = "0.8"
 portable-pty = "0.8"
 futures-util = "0.3"
+
+# Native pixel-unit scroll events (enigo only does coarse lines).
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.23"
+
+# Web Push pulls in ece → openssl, which is not sanely buildable for Windows
+# targets; push is stubbed there until we move to a RustCrypto implementation
+# (see docs/ROADMAP.md Phase 4). p256 generates the VAPID key in pure Rust so
+# the agent never shells out to an `openssl` binary at runtime.
+[target.'cfg(not(windows))'.dependencies]
 web-push = "0.11.0"
+p256 = { version = "0.13", features = ["pem"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Power",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
 
 [profile.release]
 opt-level = "z"

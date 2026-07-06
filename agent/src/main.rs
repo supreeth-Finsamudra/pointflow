@@ -2,14 +2,25 @@
 //!
 //! Serves the static phone UI over the LAN and accepts a single authenticated
 //! WebSocket from a phone, translating its messages into real mouse/keyboard
-//! input on this Mac. Requires Accessibility permission.
+//! input on this computer (macOS: requires Accessibility permission).
+//!
+//! Terminal backend per platform: macOS/Linux bridge to the user's tmux panes
+//! (`tmux.rs`, plus macOS Terminal.app tabs via `tabs.rs`); Windows manages
+//! PointFlow-owned ConPTY shells (`shells.rs`) — same wire protocol either way.
 
 mod hooks;
 mod input;
 mod protocol;
 mod push;
+#[cfg(windows)]
+mod shells;
+#[cfg(target_os = "macos")]
 mod tabs;
+#[cfg(windows)]
+mod term;
+#[cfg(unix)]
 mod tmux;
+mod util;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -35,8 +46,13 @@ use tower_http::services::ServeDir;
 use input::InputCmd;
 use protocol::ClientMsg;
 use push::Push;
+#[cfg(windows)]
+use shells::Shells as ShellBackend;
+#[cfg(target_os = "macos")]
 use tabs::Tabs;
-use tmux::Tmux;
+#[cfg(unix)]
+use tmux::Tmux as ShellBackend;
+use util::home_dir;
 
 /// Default listen port. Override with POINTFLOW_PORT.
 const DEFAULT_PORT: u16 = 8742;
@@ -45,14 +61,16 @@ const DEFAULT_PORT: u16 = 8742;
 struct AppState {
     token: String,
     tx: Sender<InputCmd>,
-    /// Bridge to the user's tmux panes (list, view, drive).
-    tmux: Arc<Tmux>,
+    /// Terminal backend: tmux panes (unix) or owned ConPTY shells (Windows).
+    shells: Arc<ShellBackend>,
     /// Copilot events (from Claude Code hooks) and Terminal-tab streams fanned
     /// out to phones, as ready-to-send JSON strings.
     events: broadcast::Sender<String>,
     /// Bridge to already-open Terminal.app tabs (no tmux required).
+    #[cfg(target_os = "macos")]
     tabs: Arc<Tabs>,
-    /// Web Push (lock-screen notifications). None if VAPID setup failed.
+    /// Web Push (lock-screen notifications). None if VAPID setup failed or
+    /// unsupported on this OS.
     push: Option<Arc<Push>>,
 }
 
@@ -91,23 +109,15 @@ async fn main() {
     let (tx, rx) = crossbeam_channel::unbounded::<InputCmd>();
     std::thread::spawn(move || input::run(rx));
 
-    // Keep the *system* awake while the agent runs so tmux sessions (and
-    // Claude Code) stay reachable with the display off/locked. `-w` ties the
-    // assertion to our lifetime; the display itself may still sleep.
-    if std::process::Command::new("/usr/bin/caffeinate")
-        .args(["-i", "-s", "-w", &std::process::id().to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .is_ok()
-    {
-        println!("[pointflow] keeping the Mac awake while running (display may sleep)");
-    }
+    // Keep the *system* awake while the agent runs so shells (and Claude
+    // Code) stay reachable with the display off/locked.
+    keep_awake();
 
-    // Bridge to tmux for viewing/driving the user's shells.
-    let tmux = Tmux::new();
+    // Terminal backend: tmux bridge (unix) or owned ConPTY shells (Windows).
+    let shells = ShellBackend::new();
     let (events, _) = broadcast::channel::<String>(64);
     // Bridge to already-open Terminal.app tabs; streams share the events pipe.
+    #[cfg(target_os = "macos")]
     let tabs = Tabs::start(events.clone());
 
     let web_dir = resolve_web_dir();
@@ -116,8 +126,9 @@ async fn main() {
     let state = AppState {
         token: token.clone(),
         tx,
-        tmux,
+        shells,
         events,
+        #[cfg(target_os = "macos")]
         tabs,
         push: Push::init().map(Arc::new),
     };
@@ -155,6 +166,44 @@ async fn main() {
     // TCP_NODELAY per connection here. Pointer latency is kept low instead by
     // rAF-batching sends on the phone (≤1 move per frame).
     axum::serve(listener, app).await.expect("server crashed");
+}
+
+/// Keep the *system* awake while the agent runs (the display may sleep).
+#[cfg(target_os = "macos")]
+fn keep_awake() {
+    // `-w` ties the assertion to our lifetime.
+    if std::process::Command::new("/usr/bin/caffeinate")
+        .args(["-i", "-s", "-w", &std::process::id().to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+    {
+        println!("[pointflow] keeping the Mac awake while running (display may sleep)");
+    }
+}
+
+#[cfg(windows)]
+fn keep_awake() {
+    use windows_sys::Win32::System::Power::{
+        SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED,
+    };
+    // The assertion is tied to the calling thread, so park one for our
+    // lifetime; it clears automatically when the process exits.
+    std::thread::spawn(|| {
+        let ok = unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) } != 0;
+        if ok {
+            println!("[pointflow] keeping the PC awake while running (display may sleep)");
+        }
+        loop {
+            std::thread::park();
+        }
+    });
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn keep_awake() {
+    // TODO(roadmap Phase 4): systemd-inhibit on Linux.
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
@@ -203,9 +252,9 @@ async fn event_handler(
         cwd_label.unwrap_or_default()
     } else {
         let status = if kind == "stop" { "done" } else { "waiting" };
-        state.tmux.set_status(&pane, status);
+        state.shells.set_status(&pane, status);
         state
-            .tmux
+            .shells
             .pane_label(&pane)
             .or(cwd_label)
             .unwrap_or_else(|| pane.clone())
@@ -266,12 +315,10 @@ async fn push_subscribe_handler(
     let Some(push) = &state.push else {
         return StatusCode::SERVICE_UNAVAILABLE;
     };
-    match serde_json::from_str::<web_push::SubscriptionInfo>(&body) {
-        Ok(sub) => {
-            push.subscribe(sub);
-            StatusCode::NO_CONTENT
-        }
-        Err(_) => StatusCode::BAD_REQUEST,
+    if push.subscribe_json(&body) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::BAD_REQUEST
     }
 }
 
@@ -281,7 +328,7 @@ async fn manifest_handler(State(state): State<AppState>) -> impl IntoResponse {
     let manifest = serde_json::json!({
         "name": "PointFlow",
         "short_name": "PointFlow",
-        "description": "Your phone as trackpad, keyboard and Claude Code remote for your Mac.",
+        "description": "Your phone as trackpad, keyboard and Claude Code remote for your computer.",
         "start_url": format!("/?token={}", state.token),
         "display": "standalone",
         "background_color": "#050508",
@@ -327,7 +374,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     // Pump the selected pane's output (snapshot + live) to the phone as binary.
     let pump = {
-        let mut frames = state.tmux.subscribe();
+        let mut frames = state.shells.subscribe();
         let out_tx = out_tx.clone();
         tokio::spawn(async move {
             loop {
@@ -374,25 +421,25 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     });
 
     // Recv half: binary frames are keystrokes for the attached pane; JSON text
-    // is tmux control or input that drives the Mac via the engine.
+    // is shell control or input that drives the computer via the engine.
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
-            Message::Binary(b) => state.tmux.write_input(&b),
+            Message::Binary(b) => state.shells.write_input(&b),
             Message::Text(t) => {
                 if let Ok(m) = serde_json::from_str::<ClientMsg>(&t) {
                     match m {
                         ClientMsg::TmuxList => {
-                            let _ = out_tx.send(Message::Text(state.tmux.panes_json()));
+                            let _ = out_tx.send(Message::Text(state.shells.panes_json()));
                         }
                         ClientMsg::TmuxSelect { id, cols, rows } => {
-                            state.tmux.select(&id, cols, rows)
+                            state.shells.select(&id, cols, rows)
                         }
-                        ClientMsg::TmuxResize { cols, rows } => state.tmux.resize(cols, rows),
+                        ClientMsg::TmuxResize { cols, rows } => state.shells.resize(cols, rows),
                         ClientMsg::TmuxKeys { id, hex } => {
-                            state.tmux.send_keys_to(&id, &decode_hex(&hex));
+                            state.shells.send_keys_to(&id, &decode_hex(&hex));
                         }
                         ClientMsg::TmuxNew => {
-                            if let Some((id, label)) = state.tmux.create_session() {
+                            if let Some((id, label)) = state.shells.create_session() {
                                 let _ = out_tx.send(Message::Text(
                                     serde_json::json!({
                                         "t": "tcreated", "id": id, "label": label
@@ -400,18 +447,36 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                                     .to_string(),
                                 ));
                                 let _ =
-                                    out_tx.send(Message::Text(state.tmux.panes_json()));
+                                    out_tx.send(Message::Text(state.shells.panes_json()));
                             }
                         }
+                        // Terminal.app tabs exist only on macOS; elsewhere the
+                        // phone gets an empty list and the section stays quiet.
+                        #[cfg(target_os = "macos")]
                         ClientMsg::TabList => {
                             let _ = out_tx.send(Message::Text(state.tabs.tabs_json()));
                         }
+                        #[cfg(not(target_os = "macos"))]
+                        ClientMsg::TabList => {
+                            let _ = out_tx.send(Message::Text(
+                                "{\"t\":\"tabs\",\"tabs\":[]}".to_string(),
+                            ));
+                        }
+                        #[cfg(target_os = "macos")]
                         ClientMsg::TabSelect { win, tab } => state.tabs.select(win, tab),
+                        #[cfg(target_os = "macos")]
                         ClientMsg::TabStop => state.tabs.stop(),
+                        #[cfg(target_os = "macos")]
                         ClientMsg::TabType { win, tab, text } => {
                             state.tabs.type_line(win, tab, &text)
                         }
+                        #[cfg(target_os = "macos")]
                         ClientMsg::TabFocus { win, tab } => state.tabs.focus(win, tab),
+                        #[cfg(not(target_os = "macos"))]
+                        ClientMsg::TabSelect { .. }
+                        | ClientMsg::TabStop
+                        | ClientMsg::TabType { .. }
+                        | ClientMsg::TabFocus { .. } => {}
                         // Channel send only fails if the input thread died.
                         other => {
                             if let Some(cmd) = other.into_cmd() {
@@ -426,7 +491,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         }
     }
 
-    state.tmux.stop();
+    state.shells.stop();
+    #[cfg(target_os = "macos")]
     state.tabs.stop();
     pump.abort();
     events_task.abort();
@@ -459,8 +525,8 @@ async fn upload_handler(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let dir = match std::env::var_os("HOME") {
-        Some(h) => PathBuf::from(h).join("Downloads").join("PointFlow"),
+    let dir = match home_dir() {
+        Some(h) => h.join("Downloads").join("PointFlow"),
         None => std::env::temp_dir().join("pointflow-uploads"),
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -480,7 +546,13 @@ async fn upload_handler(
 /// Spawn `cloudflared` as a quick tunnel to this agent and print the public
 /// pairing QR/URL once the edge assigns one. Runs for the agent's lifetime.
 async fn run_tunnel(port: u16, token: String) {
-    let bin = ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"]
+    // Well-known install spots first (a minimal PATH is common under launchd);
+    // otherwise trust PATH — winget/choco/apt all put cloudflared there.
+    #[cfg(target_os = "macos")]
+    let candidates = ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"];
+    #[cfg(not(target_os = "macos"))]
+    let candidates: [&str; 0] = [];
+    let bin = candidates
         .iter()
         .find(|p| Path::new(p).exists())
         .copied()
@@ -500,9 +572,14 @@ async fn run_tunnel(port: u16, token: String) {
     {
         Ok(c) => c,
         Err(_) => {
+            #[cfg(target_os = "macos")]
+            eprintln!("[pointflow] --tunnel needs cloudflared: brew install cloudflared");
+            #[cfg(windows)]
             eprintln!(
-                "[pointflow] --tunnel needs cloudflared: brew install cloudflared"
+                "[pointflow] --tunnel needs cloudflared: winget install Cloudflare.cloudflared"
             );
+            #[cfg(not(any(target_os = "macos", windows)))]
+            eprintln!("[pointflow] --tunnel needs cloudflared on PATH");
             return;
         }
     };
@@ -562,7 +639,7 @@ fn gen_token() -> String {
 
 /// Where the persistent pairing token lives: `~/.pointflow/token`.
 fn token_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".pointflow").join("token"))
+    util::state_dir().map(|d| d.join("token"))
 }
 
 /// Load the saved pairing token, creating (and persisting) one on first run.
@@ -632,7 +709,7 @@ fn print_qr(url: &str) {
 
     println!("  Scan the QR with your phone, or open this on your phone:\n");
     println!("    {url}\n");
-    println!("  (Phone and Mac must be on the same WiFi network.)");
+    println!("  (Phone and computer must be on the same WiFi network.)");
 }
 
 fn print_banner(url: &str, web_dir: &Path) {

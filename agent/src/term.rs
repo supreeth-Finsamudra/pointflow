@@ -1,18 +1,24 @@
-//! A single persistent PTY session shared by attached phones.
+//! A PointFlow-owned PTY session (ConPTY on Windows, forkpty on unix).
 //!
-//! Spawns the user's login shell once (for the agent's whole life), fans its
-//! output out to every connected phone — live plus a scrollback replay on
-//! attach — and accepts keystrokes and resizes back. This is deliberately
-//! separate from the input-injection path in `input.rs`: the trackpad and
-//! keyboard still drive the *Mac's* focused app; the terminal drives *this*
-//! shell. Nothing here touches `enigo`.
+//! Spawns a shell, fans its output out to every connected phone — live plus a
+//! scrollback replay on attach — and accepts keystrokes and resizes back.
+//! This is deliberately separate from the input-injection path in `input.rs`:
+//! the trackpad and keyboard still drive the *computer's* focused app; the
+//! terminal drives *this* shell. Nothing here touches `enigo`.
+//!
+//! On Windows this is the terminal backend (`shells.rs` manages several of
+//! these); Windows exposes no API to read another terminal's buffer, so
+//! phone-visible shells are the ones PointFlow spawns.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
+
+use crate::util::home_dir;
 
 /// Max bytes of scrollback replayed to a phone when it (re)attaches.
 const SCROLLBACK_CAP: usize = 256 * 1024;
@@ -21,6 +27,8 @@ const BROADCAST_CAP: usize = 1024;
 
 /// Handle to the live shell. Cheap to clone (it's all behind the `Arc`).
 pub struct Term {
+    /// Basename of the spawned shell ("zsh", "pwsh", ...), for labels.
+    pub program: String,
     /// PTY master writer — keystrokes go here.
     writer: Mutex<Box<dyn Write + Send>>,
     /// PTY master — kept for `resize()`.
@@ -30,14 +38,43 @@ pub struct Term {
     inner: Mutex<Shared>,
     /// Live output fan-out; each phone subscribes.
     output_tx: broadcast::Sender<Vec<u8>>,
+    /// False once the shell exits (reader hit EOF).
+    alive: AtomicBool,
 }
 
 struct Shared {
     scrollback: VecDeque<u8>,
 }
 
+/// The shell to spawn and its args, per platform.
+#[cfg(unix)]
+fn default_shell() -> (String, Vec<String>) {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    // Login shell, so the user's PATH/aliases are present.
+    (shell, vec!["-l".to_string()])
+}
+
+#[cfg(windows)]
+fn default_shell() -> (String, Vec<String>) {
+    fn on_path(name: &str) -> bool {
+        std::env::var_os("PATH")
+            .map(|p| std::env::split_paths(&p).any(|d| d.join(name).exists()))
+            .unwrap_or(false)
+    }
+    // Prefer PowerShell 7+, then Windows PowerShell, then cmd.
+    for sh in ["pwsh.exe", "powershell.exe"] {
+        if on_path(sh) {
+            return (sh.to_string(), vec!["-NoLogo".to_string()]);
+        }
+    }
+    (
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
+        Vec::new(),
+    )
+}
+
 impl Term {
-    /// Spawn the login shell on a PTY and start pumping its output.
+    /// Spawn the platform shell on a PTY and start pumping its output.
     pub fn spawn() -> std::io::Result<Arc<Term>> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -49,11 +86,14 @@ impl Term {
             })
             .map_err(to_io)?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let (shell, args) = default_shell();
         let mut cmd = CommandBuilder::new(&shell);
-        cmd.arg("-l"); // login shell, so the user's PATH/aliases are present
+        for a in &args {
+            cmd.arg(a);
+        }
+        #[cfg(unix)]
         cmd.env("TERM", "xterm-256color");
-        if let Ok(home) = std::env::var("HOME") {
+        if let Some(home) = home_dir() {
             cmd.cwd(home);
         }
 
@@ -66,13 +106,21 @@ impl Term {
         let writer = pair.master.take_writer().map_err(to_io)?;
         let (output_tx, _) = broadcast::channel::<Vec<u8>>(BROADCAST_CAP);
 
+        // "C:\...\pwsh.exe" / "/bin/zsh" → "pwsh" / "zsh".
+        let program = std::path::Path::new(&shell)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| shell.clone());
+
         let term = Arc::new(Term {
+            program,
             writer: Mutex::new(writer),
             master: Mutex::new(pair.master),
             inner: Mutex::new(Shared {
                 scrollback: VecDeque::new(),
             }),
             output_tx,
+            alive: AtomicBool::new(true),
         });
 
         // Reader thread: blocking PTY reads -> scrollback + live broadcast.
@@ -86,7 +134,11 @@ impl Term {
                 let mut buf = [0u8; 8192];
                 loop {
                     match reader.read(&mut buf) {
-                        Ok(0) | Err(_) => break, // shell exited or PTY closed
+                        Ok(0) | Err(_) => {
+                            // Shell exited or PTY closed.
+                            term.alive.store(false, Ordering::Relaxed);
+                            break;
+                        }
                         Ok(n) => {
                             let chunk = buf[..n].to_vec();
                             // Append to scrollback and broadcast under one lock
@@ -138,6 +190,11 @@ impl Term {
         let rx = self.output_tx.subscribe();
         let snapshot: Vec<u8> = inner.scrollback.iter().copied().collect();
         (snapshot, rx)
+    }
+
+    /// Whether the shell process is still running.
+    pub fn alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
     }
 }
 

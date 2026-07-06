@@ -2045,6 +2045,7 @@ dependencies = [
  "enigo",
  "futures-util",
  "local-ip-address",
+ "p256",
  "portable-pty",
  "qrcode",
  "rand",
@@ -2053,6 +2054,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "web-push",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
