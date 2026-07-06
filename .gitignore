@@ -32,3 +32,6 @@ next-env.d.ts
 # vercel
 .vercel
 /target/
+
+# internal marketing playbook — never publish
+/BRAND.md
