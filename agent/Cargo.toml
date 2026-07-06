@@ -5,6 +5,7 @@ edition = "2021"
 description = "Your phone as trackpad, keyboard and Claude Code remote for your computer"
 repository = "https://github.com/supreeth-Finsamudra/pointflow"
 homepage = "https://github.com/supreeth-Finsamudra/pointflow"
+license = "MIT"
 
 [[bin]]
 name = "pointflow-agent"
