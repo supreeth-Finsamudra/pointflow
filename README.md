@@ -47,7 +47,7 @@ brew install supreeth-Finsamudra/pointflow/pointflow
 pointflow-agent
 ```
 
-**macOS/Linux (one-liner):**
+**macOS (one-liner):**
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/supreeth-Finsamudra/pointflow/releases/latest/download/pointflow-agent-installer.sh | sh
 ```

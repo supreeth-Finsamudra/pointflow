@@ -31,7 +31,7 @@ git tag v0.1.0 && git push --tags
 Users then install with any of:
 
 ```bash
-brew install supreeth-Finsamudra/pointflow/pointflow                  # macOS/Linux
+brew install supreeth-Finsamudra/pointflow/pointflow                  # macOS
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/supreeth-Finsamudra/pointflow/releases/latest/download/pointflow-agent-installer.sh | sh
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/supreeth-Finsamudra/pointflow/releases/latest/download/pointflow-agent-installer.ps1 | iex"
@@ -41,9 +41,10 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/supreeth-Finsamudr
 
 The release pipeline is ready but needs two things only the account owner can do:
 
-1. **Create the tap repo** (public, can be empty):
+1. **Create the tap repo** (public; it must have at least one commit —
+   `actions/checkout` fails on a zero-commit repo, so seed it with a README):
    ```bash
-   gh repo create supreeth-Finsamudra/homebrew-pointflow --public \
+   gh repo create supreeth-Finsamudra/homebrew-pointflow --public --add-readme \
      -d "Homebrew tap for PointFlow"
    ```
 2. **Create the tap token**: a fine-grained PAT with **Contents: read/write**
