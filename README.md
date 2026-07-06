@@ -1,17 +1,23 @@
 # PointFlow
 
-**Your phone is now your computer's trackpad, keyboard, terminal — and the
-remote control for your AI coding agents. From anywhere on Earth.**
+**Every shell on your computer, live and typeable from your phone. Which means
+every AI coding agent — Claude Code, Codex, Aider, anything that runs in a
+terminal — now has a remote control in your pocket.**
 
-Kick off a Claude Code task, leave the house. Your phone buzzes on the lock
-screen: *"✳ Claude needs your permission."* You tap **Approve ⏎** from the
-café, watch the diff stream by in a real terminal, and prompt the next task —
-over cellular, with no VPN, no phone app, no cloud account. One ~4 MB binary
-on your computer and a QR code is the entire setup.
+Your agent is mid-refactor and asks for permission. Your machine is locked,
+you're not home. Your phone shows the pane in a **real full-color terminal**
+— scrollback, TUIs, the actual diff — you read it, type into the shell, and
+the agent keeps moving. Over cellular. No VPN, no phone app, no cloud
+account. One ~4 MB Rust binary and a QR code is the entire setup.
 
-On your WiFi it's also the best trackpad+keyboard your computer never had:
-swipe to move the cursor, dictate into whatever app has focus, drive your
-shells full-color from the couch.
+```
+            ┌───────────────────────────────────────┐
+[ Phone ] ──┤  Agent (Rust, single ~4 MB binary)     │──► your tmux panes &
+ xterm.js   │   • serves the phone UI (embedded)     │    shells: view, type,
+ terminal   │   • WebSocket: keystrokes ⇄ output     │    approve — any of them
+ + trackpad │   • token-paired (QR), LAN or tunnel   │◄── Claude Code hooks:
+ + keyboard └───────────────────────────────────────┘    "needs you" → phone
+```
 
 ## The 60-second anywhere demo
 
@@ -22,42 +28,35 @@ pointflow-agent --tunnel
 
 1. Scan the **✦ public QR** it prints (give it ~30 s to go live)
 2. On the phone: Share → **Add to Home Screen** → open from the icon
-3. Tap 🔔 to enable lock-screen notifications
-4. Walk out the door. Your computer — and your Claude Code sessions — are in
-   your pocket.
+3. Tap `>_` — every tmux pane on your machine is right there. Tap one, type.
+4. Walk out the door. Your shells — and whatever agents run in them — come with you.
 
 *Straight talk on security: the tunnel URL is public, so treat it like a
 password — every connection still requires the session token baked into the
 QR, and `pointflow-agent --qr` reprints/rotates your pairing. Skip `--tunnel`
 and nothing ever leaves your LAN.*
 
-```
-            ┌───────────────────────────────────────┐
-[ Phone ] ──┤  Agent (Rust, single ~4 MB binary)     │──► moves cursor, clicks,
- browser    │   • serves the phone UI (embedded)     │    types into ANY app
-  trackpad  │   • WebSocket for input + terminals    │──► streams your shells
-  keyboard  │   • token-paired (QR), LAN or tunnel   │◄── Claude Code hooks:
-  terminal  └───────────────────────────────────────┘    "needs you" → phone
-```
-
 ## Why people use it
 
+- 🖥 **Your real shells, not a toy** — full-color xterm.js views of your tmux
+  panes with complete scrollback, live TUIs, quick keys (Esc·Tab·⏎·arrows·⌃C),
+  pinch-free font zoom, and byte-exact keystroke round-tripping. If it runs in
+  a terminal, you can watch it and drive it from your phone.
+- 🤖 **Agent-agnostic by design** — the phone is just another client of your
+  shells. Claude Code, Codex CLI, Aider, custom scripts, long test runs,
+  builds: anything that prints and reads stdin is remotely yours. A compose
+  box built for prompts (newlines don't submit; dictation and autocorrect
+  work) plus photo-upload-to-file-path for multimodal prompts.
+- ✳️ **Claude Code gets superpowers** — one command installs official hooks:
+  *"Claude needs your permission"* arrives as a card and a **lock-screen push
+  notification** → **Approve ⏎ / Deny Esc** without unfocusing a window or
+  unlocking the machine. Prompt, watch the diff stream, approve, repeat.
 - 🌍 **Works from anywhere** — `--tunnel` prints a public HTTPS QR (Cloudflare
-  quick tunnel): drive your desktop from cellular, a café, another country.
-  No VPN, no port forwarding, no phone app.
-- ✳️ **Claude Code copilot mode** — hook events surface as cards and
-  lock-screen push notifications: *"Claude needs your permission"* →
-  **Approve ⏎ / Deny Esc** from your phone, without the Mac unlocked or the
-  window focused. Prompt it, watch the diff stream by, approve, repeat.
-- 🖥 **Real terminals on your phone** — full-color xterm.js views of your
-  shells with scrollback, quick keys (Esc·Tab·⏎·arrows·⌃C), a compose box
-  built for prompts, even photo-upload-to-file-path for multimodal prompts.
-- 🖱 **A genuinely good trackpad** — sub-pixel pointer with acceleration,
-  momentum scrolling, a full gesture vocabulary (tap, drag, two-finger scroll,
-  three-finger Mission Control), tunable to your thumb.
-- ⌨️ **Type anywhere** — your phone keyboard (including voice dictation,
-  swipe, emoji) lands in whatever has focus on the desktop. Like Whispr
-  Flow's "insert text anywhere," but the input device is your phone.
+  quick tunnel): cellular, café, another country. No VPN, no port forwarding.
+- 🖱 **Trackpad + keyboard included** — when you're on the couch instead of
+  across the world: sub-pixel pointer with acceleration and momentum scroll,
+  and your phone keyboard (voice dictation included) typing into whatever has
+  focus.
 - 🔒 **Local-first** — no cloud, no account, no telemetry. Every connection
   needs the session token from the QR. Your keystrokes never leave your
   network unless *you* start the tunnel.
@@ -70,7 +69,7 @@ brew install supreeth-Finsamudra/pointflow/pointflow
 pointflow-agent
 ```
 
-**macOS (one-liner):**
+**macOS/Linux (one-liner):**
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/supreeth-Finsamudra/pointflow/releases/latest/download/pointflow-agent-installer.sh | sh
 ```
@@ -87,22 +86,23 @@ cd phone && pnpm install && pnpm build && cd ..   # build the phone UI once
 cd agent && cargo run                              # debug builds read it live
 ```
 
-Run the agent, scan the QR with your phone (same WiFi), start swiping.
-Away from home: `pointflow-agent --tunnel` (needs
-[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)).
+Run the agent, scan the QR (same WiFi) or use `--tunnel` for anywhere-access.
 
 ### macOS: Accessibility permission
-Injecting input needs one approval: **System Settings → Privacy & Security →
-Accessibility** → enable your terminal (or the app that launches the agent),
-then restart the agent.
+Only the trackpad/keyboard injection needs it (the terminal bridge doesn't):
+**System Settings → Privacy & Security → Accessibility** → enable your
+terminal, restart the agent.
 
-## The terminal, by platform
+## The terminal bridge, by platform
 
 | Platform | What you get |
 | --- | --- |
-| **macOS** | Bridge to your **tmux panes** (full color/TUIs/scrollback — best with Claude Code) *and* your already-open **Terminal.app tabs** (zero setup). `+ New` on the phone spawns a fresh shell. |
-| **Windows** *(beta)* | `+ New` spawns PointFlow-owned **ConPTY** shells (pwsh/powershell/cmd) with the same phone UX. (Windows offers no API to read other terminals' buffers — so shells live inside PointFlow.) |
-| **Linux** | tmux bridge (agent builds; input layer needs X11/libei — see roadmap). |
+| **macOS / Linux** | Your **tmux panes**: list all, pick one, full scrollback with colors, type into unfocused panes (`send-keys` byte-exact), live streaming via a real attached client. macOS additionally bridges **already-open Terminal.app tabs** — zero setup, no tmux needed. `+ New` on the phone spawns a fresh shell. |
+| **Windows** *(beta)* | `+ New` spawns PointFlow-owned **ConPTY** shells (pwsh/powershell/cmd) with the same phone UX. (Windows exposes no API to read other terminals' buffers — so shells live inside PointFlow.) |
+
+Why tmux underneath: it's the one clean way to read *and* drive
+already-running shells — it owns the text, history, and stdin, so the phone
+gets real data instead of screenshots. Full design: [docs/TERMINAL_STREAMING.md](docs/TERMINAL_STREAMING.md).
 
 ## Claude Code copilot
 
@@ -110,23 +110,23 @@ then restart the agent.
 pointflow-agent --install-hooks   # one-time; merges into ~/.claude/settings.json
 ```
 
-Now every Claude Code session reports to your phone: **"✳ Claude needs you"**
-cards with Approve/Deny, **"✓ finished"** when a task completes — as real
-lock-screen push notifications when installed as a PWA over the tunnel
-(Share → Add to Home Screen). Multiple sessions are tracked per shell.
+Every Claude Code session then reports to your phone: **"✳ Claude needs you"**
+cards with one-tap Approve/Deny (keys are sent straight to that pane — it
+doesn't even need to be the one you're viewing), **"✓ finished"** when a task
+completes, and lock-screen push when installed as a PWA over the tunnel.
+Multiple sessions tracked per pane. Other agents work in the terminal today;
+hook-style notifications for them are on the roadmap.
 
-## Gestures
+## Also in the box
 
-| Gesture | Action |
-| --- | --- |
-| Swipe | Move cursor (sub-pixel, accelerated) |
-| Tap / double-tap | Click / double click |
-| Double-tap-drag, hold-drag | Drag, text select |
-| Hold then lift / two-finger tap | Right click |
-| Two-finger swipe | Scroll (momentum) |
-| Three-finger swipe | Mission Control · App Exposé · switch spaces (macOS) |
-| Right-edge strip | Scrollbar-style scroll |
-| ⚙ settings | Pointer/scroll speed, natural scroll, tap-to-click — persisted |
+- **Trackpad**: sub-pixel pointer, acceleration, momentum + edge-strip scroll,
+  tap/drag/two-finger/three-finger gestures (Mission Control on macOS), all
+  tunable in ⚙ settings, persisted on the phone.
+- **Keyboard**: type or dictate into whatever has desktop focus; special keys
+  and chords (⌘C-style) included.
+- **Photo → path**: send a phone photo; it lands in `~/Downloads/PointFlow`
+  and the file path drops into your compose box — multimodal prompts from the
+  couch.
 
 ## Configuration
 
@@ -144,10 +144,10 @@ treat it like a password. No data leaves your machine otherwise.
 
 ## Project
 
-- [Roadmap](docs/ROADMAP.md) — Windows parity, the agent dashboard, packaging
+- [Roadmap](docs/ROADMAP.md) — agent dashboard, Windows parity, packaging
 - [Distribution runbook](docs/DISTRIBUTION.md) — how releases ship
 - [Terminal streaming design](docs/TERMINAL_STREAMING.md)
 - License: [MIT](LICENSE)
 
 Built as two pieces: `phone/` (Next.js static PWA) and `agent/` (Rust: axum +
-enigo + portable-pty). The release binary embeds the UI — one file, ~4 MB.
+portable-pty + enigo). The release binary embeds the UI — one file, ~4 MB.
