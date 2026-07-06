@@ -1,0 +1,27 @@
+# Release pipeline config for `dist` (cargo-dist).
+# Tagging vX.Y.Z runs .github/workflows/release.yml: builds the phone UI,
+# then per-platform agent binaries (UI embedded), publishes a GitHub Release
+# with shell/PowerShell installers, and pushes the Homebrew formula to the tap.
+[workspace]
+members = ["cargo:agent"]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "homebrew"]
+# A GitHub repo to push Homebrew formulas to
+tap = "supreeth-Finsamudra/homebrew-pointflow"
+# Publish jobs to run in CI
+publish-jobs = ["homebrew"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"]
+# Path that installers should place binaries in
+install-path = "~/.pointflow/bin"
+# Build the phone UI before cargo builds (rust-embed bakes phone/out in).
+github-build-setup = "build-setup.yml"
+# Whether to install an updater program
+install-updater = false

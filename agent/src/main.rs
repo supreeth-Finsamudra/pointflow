@@ -57,6 +57,14 @@ use util::home_dir;
 /// Default listen port. Override with POINTFLOW_PORT.
 const DEFAULT_PORT: u16 = 8742;
 
+/// The built phone UI, baked into the binary so the agent ships as a single
+/// file. Release builds embed `phone/out`; debug builds read it live from
+/// disk (so UI rebuilds don't need a cargo rebuild). `POINTFLOW_WEB_DIR`
+/// still overrides with an on-disk directory.
+#[derive(rust_embed::Embed)]
+#[folder = "../phone/out"]
+struct WebAssets;
+
 #[derive(Clone)]
 struct AppState {
     token: String,
@@ -120,8 +128,7 @@ async fn main() {
     #[cfg(target_os = "macos")]
     let tabs = Tabs::start(events.clone());
 
-    let web_dir = resolve_web_dir();
-    let serve_dir = ServeDir::new(&web_dir).append_index_html_on_directories(true);
+    let web_dir = std::env::var("POINTFLOW_WEB_DIR").ok().map(PathBuf::from);
 
     let state = AppState {
         token: token.clone(),
@@ -141,10 +148,17 @@ async fn main() {
         .route("/push/subscribe", post(push_subscribe_handler))
         .route("/manifest.webmanifest", get(manifest_handler))
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
-        .fallback_service(serve_dir)
         .with_state(state);
+    // Phone UI: an explicit POINTFLOW_WEB_DIR serves from disk (dev override);
+    // otherwise the UI embedded in the binary answers.
+    let app = match &web_dir {
+        Some(dir) => app.fallback_service(
+            ServeDir::new(dir).append_index_html_on_directories(true),
+        ),
+        None => app.fallback(get(embedded_ui_handler)),
+    };
 
-    print_banner(&url, &web_dir);
+    print_banner(&url, web_dir.as_deref());
 
     // `--tunnel`: also expose the agent at a public HTTPS URL via a Cloudflare
     // quick tunnel — works from any network, no VPN on the phone. The session
@@ -204,6 +218,32 @@ fn keep_awake() {
 #[cfg(not(any(target_os = "macos", windows)))]
 fn keep_awake() {
     // TODO(roadmap Phase 4): systemd-inhibit on Linux.
+}
+
+/// Serve the embedded phone UI: exact path first, then `<dir>/index.html`
+/// (Next static-export routes), 404 otherwise.
+async fn embedded_ui_handler(uri: axum::http::Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/');
+    let key = if path.is_empty() { "index.html" } else { path };
+    let (key, file) = match WebAssets::get(key) {
+        Some(f) => (key.to_string(), Some(f)),
+        None => {
+            let idx = format!("{}/index.html", key.trim_end_matches('/'));
+            let f = WebAssets::get(&idx);
+            (idx, f)
+        }
+    };
+    match file {
+        Some(f) => (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                mime_guess::from_path(&key).first_or_octet_stream().to_string(),
+            )],
+            f.data,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
@@ -665,31 +705,6 @@ fn load_or_create_token() -> String {
     gen_token()
 }
 
-/// Find the built phone UI. Checks POINTFLOW_WEB_DIR, then paths relative to
-/// both the binary and the working directory.
-fn resolve_web_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("POINTFLOW_WEB_DIR") {
-        return PathBuf::from(dir);
-    }
-
-    let mut candidates: Vec<PathBuf> = vec![
-        PathBuf::from("phone/out"),
-        PathBuf::from("../phone/out"),
-        PathBuf::from("../../phone/out"),
-    ];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("phone-ui"));
-            candidates.push(dir.join("../phone/out"));
-        }
-    }
-
-    candidates
-        .into_iter()
-        .find(|p| p.join("index.html").exists())
-        .unwrap_or_else(|| PathBuf::from("phone/out"))
-}
-
 /// Render the pairing QR + URL to the terminal.
 fn print_qr(url: &str) {
     use qrcode::render::unicode;
@@ -712,14 +727,18 @@ fn print_qr(url: &str) {
     println!("  (Phone and computer must be on the same WiFi network.)");
 }
 
-fn print_banner(url: &str, web_dir: &Path) {
+fn print_banner(url: &str, web_dir: Option<&Path>) {
     print_qr(url);
 
-    if !web_dir.join("index.html").exists() {
-        eprintln!(
+    match web_dir {
+        Some(dir) if !dir.join("index.html").exists() => eprintln!(
             "\n  ⚠  Phone UI not found at {}\n     Build it first:  (cd phone && pnpm build)\n",
-            web_dir.display()
-        );
+            dir.display()
+        ),
+        None if WebAssets::get("index.html").is_none() => eprintln!(
+            "\n  ⚠  Phone UI missing from this build.\n     Debug builds read phone/out from disk: (cd phone && pnpm build)\n"
+        ),
+        _ => {}
     }
     println!();
 }

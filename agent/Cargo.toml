@@ -2,11 +2,18 @@
 name = "pointflow-agent"
 version = "0.1.0"
 edition = "2021"
-description = "PointFlow desktop agent — serves the phone UI and injects mouse/keyboard input on macOS and Windows"
+description = "Your phone as trackpad, keyboard and Claude Code remote for your computer"
+repository = "https://github.com/supreeth-Finsamudra/pointflow"
+homepage = "https://github.com/supreeth-Finsamudra/pointflow"
+license = "MIT"
 
 [[bin]]
 name = "pointflow-agent"
 path = "src/main.rs"
+
+# `brew install supreeth-Finsamudra/pointflow/pointflow`
+[package.metadata.dist]
+formula = "pointflow"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -21,6 +28,9 @@ local-ip-address = "0.6"
 rand = "0.8"
 portable-pty = "0.8"
 futures-util = "0.3"
+# Phone UI baked into the binary (release), read live from disk (debug).
+rust-embed = "8"
+mime_guess = "2"
 
 # Native pixel-unit scroll events (enigo only does coarse lines).
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -45,3 +55,8 @@ windows-sys = { version = "0.59", features = [
 opt-level = "z"
 lto = true
 strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
