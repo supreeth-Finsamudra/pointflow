@@ -12,8 +12,8 @@ export function PadButton({
   className?: string;
 }) {
   const theme = accent
-    ? "border-emerald-400/30 bg-emerald-500/20 text-emerald-200 active:bg-emerald-500/35"
-    : "border-white/10 bg-white/5 text-white/90 active:bg-white/15";
+    ? "pf-accent border-transparent font-semibold"
+    : "border-white/10 bg-white/[0.06] text-white/90 active:bg-white/15";
   return (
     <button
       type="button"
@@ -22,7 +22,7 @@ export function PadButton({
         e.preventDefault();
         onPress();
       }}
-      className={`select-none rounded-xl border px-3 py-3 text-base font-medium ${theme} ${className}`}
+      className={`pf-press select-none rounded-xl border px-3 py-3 text-base font-medium ${theme} ${className}`}
     >
       {children}
     </button>

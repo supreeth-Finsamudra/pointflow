@@ -3,12 +3,18 @@
 //! server talks to it only through an `mpsc` channel.
 //!
 //! Cursor movement and scrolling carry sub-pixel deltas; we keep fractional
-//! accumulators so slow, precise motion isn't lost to integer rounding. Scroll
-//! is emitted as native pixel-unit `CGEvent`s (enigo only does coarse lines).
+//! accumulators so slow, precise motion isn't lost to integer rounding.
+//! Scroll is emitted natively per platform (enigo only does coarse lines):
+//! macOS posts pixel-unit `CGEvent`s; Windows sends `SendInput` wheel events
+//! with fractional-notch deltas (smooth in apps that honor sub-WHEEL_DELTA
+//! values, correctly accumulated by the rest); other unixes fall back to
+//! enigo's line scroll.
 
 use crossbeam_channel::Receiver;
 
+#[cfg(target_os = "macos")]
 use core_graphics::event::{CGEvent, CGEventTapLocation, ScrollEventUnit};
+#[cfg(target_os = "macos")]
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 
@@ -172,11 +178,14 @@ pub fn run(rx: Receiver<InputCmd>) {
     let enigo = match Enigo::new(&Settings::default()) {
         Ok(e) => e,
         Err(e) => {
+            #[cfg(target_os = "macos")]
             eprintln!(
                 "[pointflow] FATAL: could not initialize input engine: {e}\n\
                  Grant Accessibility permission to this app in \
                  System Settings → Privacy & Security → Accessibility, then restart."
             );
+            #[cfg(not(target_os = "macos"))]
+            eprintln!("[pointflow] FATAL: could not initialize input engine: {e}");
             return;
         }
     };
@@ -240,6 +249,7 @@ impl Engine {
     }
 
     /// Emit a native pixel-unit scroll event, carrying sub-pixel remainder.
+    #[cfg(target_os = "macos")]
     fn scroll_px(&mut self, dx: f64, dy: f64) -> Result<(), String> {
         self.scroll_x += dx;
         self.scroll_y += dy;
@@ -257,6 +267,84 @@ impl Engine {
         let event = CGEvent::new_scroll_event(source, ScrollEventUnit::PIXEL, 2, iy, ix, 0)
             .map_err(|_| "could not create scroll event".to_string())?;
         event.post(CGEventTapLocation::HID);
+        Ok(())
+    }
+
+    /// Windows: convert pixel deltas to wheel deltas (WHEEL_DELTA = 120 = one
+    /// notch ≈ `PX_PER_NOTCH` px of touch travel) and inject via `SendInput`.
+    /// Fractional deltas are legal — smooth-scrolling apps (browsers, VS Code,
+    /// Windows Terminal) honor them directly; classic apps accumulate them to
+    /// whole notches. The remainder is carried in *pixel* space so nothing is
+    /// lost to rounding. Sign note: positive dy here follows the wheel
+    /// convention (up/away); the phone handles natural-scroll inversion.
+    #[cfg(windows)]
+    fn scroll_px(&mut self, dx: f64, dy: f64) -> Result<(), String> {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL,
+        };
+
+        /// Pixels of touch travel that equal one wheel notch (120).
+        const PX_PER_NOTCH: f64 = 80.0;
+
+        self.scroll_x += dx;
+        self.scroll_y += dy;
+        let ddx = (self.scroll_x * 120.0 / PX_PER_NOTCH).trunc() as i32;
+        let ddy = (self.scroll_y * 120.0 / PX_PER_NOTCH).trunc() as i32;
+        if ddx == 0 && ddy == 0 {
+            return Ok(());
+        }
+        self.scroll_x -= ddx as f64 * PX_PER_NOTCH / 120.0;
+        self.scroll_y -= ddy as f64 * PX_PER_NOTCH / 120.0;
+
+        let mut inputs: Vec<INPUT> = Vec::with_capacity(2);
+        let make = |flags: u32, delta: i32| {
+            let mut inp: INPUT = unsafe { std::mem::zeroed() };
+            inp.r#type = INPUT_MOUSE;
+            inp.Anonymous.mi.dwFlags = flags;
+            inp.Anonymous.mi.mouseData = delta as u32;
+            inp
+        };
+        if ddy != 0 {
+            inputs.push(make(MOUSEEVENTF_WHEEL, ddy));
+        }
+        if ddx != 0 {
+            // HWHEEL: positive = scroll right.
+            inputs.push(make(MOUSEEVENTF_HWHEEL, -ddx));
+        }
+        let sent = unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            )
+        };
+        if sent != inputs.len() as u32 {
+            return Err("SendInput rejected scroll event".to_string());
+        }
+        Ok(())
+    }
+
+    /// Other unixes: enigo's coarse line scroll (~`PX_PER_LINE` px per line),
+    /// with the remainder carried so slow swipes still move eventually.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    fn scroll_px(&mut self, dx: f64, dy: f64) -> Result<(), String> {
+        use enigo::Axis;
+
+        const PX_PER_LINE: f64 = 20.0;
+
+        self.scroll_x += dx;
+        self.scroll_y += dy;
+        let lx = (self.scroll_x / PX_PER_LINE).trunc() as i32;
+        let ly = (self.scroll_y / PX_PER_LINE).trunc() as i32;
+        if lx != 0 {
+            self.scroll_x -= lx as f64 * PX_PER_LINE;
+            self.enigo.scroll(lx, Axis::Horizontal).map_err(es)?;
+        }
+        if ly != 0 {
+            self.scroll_y -= ly as f64 * PX_PER_LINE;
+            // enigo: positive = scroll down; our dy is wheel-up positive.
+            self.enigo.scroll(-ly, Axis::Vertical).map_err(es)?;
+        }
         Ok(())
     }
 

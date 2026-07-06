@@ -38,6 +38,21 @@ The agent prints a QR code and a URL like `http://192.168.1.4:8742/?token=…`.
 Scan it (or open it) on a phone that's **on the same WiFi**. You'll see the
 trackpad; start swiping.
 
+### Use it away from home
+
+```bash
+brew install cloudflared          # one-time
+cd agent && cargo run -- --tunnel
+```
+
+Besides the LAN QR, the agent prints a second QR with a **public HTTPS URL**
+(Cloudflare quick tunnel) that works from any network — cellular, café,
+anywhere — with no VPN or app on the phone. The session token still gates every
+connection, but the URL is public: treat it like a password. Give the tunnel
+~30 s after the QR prints for DNS to propagate. (For a private-network
+alternative, Tailscale also works out of the box: open
+`http://<mac-tailscale-ip>:8742/?token=…`.)
+
 ### macOS Accessibility permission
 
 Injecting input requires permission. The first time, grant it to the app that

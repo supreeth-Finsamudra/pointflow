@@ -5,6 +5,9 @@ use serde::Deserialize;
 use crate::input::{ChordKey, InputCmd, Modifier, MouseButton, SpecialKey};
 
 /// A message from the phone. The first message on a connection MUST be `Auth`.
+// The Tab* variant fields are only read on macOS (Terminal.app bridge);
+// elsewhere they're deserialized and discarded.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 pub enum ClientMsg {
@@ -41,6 +44,40 @@ pub enum ClientMsg {
         mods: Vec<String>,
         key: String,
     },
+    /// Ask for the list of tmux panes (phone's shell picker).
+    #[serde(rename = "tlist")]
+    TmuxList,
+    /// Select a tmux pane to view/drive (by pane id, e.g. "%3"), attaching at
+    /// the phone's terminal size.
+    #[serde(rename = "tsel")]
+    TmuxSelect { id: String, cols: u16, rows: u16 },
+    /// Resize the attached tmux client to the phone's viewport.
+    #[serde(rename = "tresize")]
+    TmuxResize { cols: u16, rows: u16 },
+    /// Send hex-encoded key bytes to a *specific* pane without selecting it
+    /// (used by notification cards: Approve/Deny from anywhere).
+    #[serde(rename = "tkeys")]
+    TmuxKeys { id: String, hex: String },
+    /// Create a fresh tmux shell (new session) and report it back.
+    #[serde(rename = "tnew")]
+    TmuxNew,
+    /// Ask for the list of open Terminal.app tabs (no tmux required).
+    #[serde(rename = "tablist")]
+    TabList,
+    /// Select a Terminal.app tab to view: streams its screen and focuses it so
+    /// typed keystrokes (existing injection path) land in it.
+    #[serde(rename = "tabsel")]
+    TabSelect { win: i64, tab: i64 },
+    /// Stop streaming the Terminal.app tab.
+    #[serde(rename = "tabstop")]
+    TabStop,
+    /// Type a line (plus newline) into a tab via Apple Events — works without
+    /// focus and behind the lock screen.
+    #[serde(rename = "tabtype")]
+    TabType { win: i64, tab: i64, text: String },
+    /// Bring a tab to the front (needed only for the raw quick keys).
+    #[serde(rename = "tabfocus")]
+    TabFocus { win: i64, tab: i64 },
     /// Keep-alive; no effect.
     Ping,
 }
@@ -69,7 +106,18 @@ impl ClientMsg {
     /// Returns `None` for `Auth`/`Ping` (no input action) or unparseable keys.
     pub fn into_cmd(self) -> Option<InputCmd> {
         match self {
-            ClientMsg::Auth { .. } | ClientMsg::Ping => None,
+            ClientMsg::Auth { .. }
+            | ClientMsg::Ping
+            | ClientMsg::TmuxList
+            | ClientMsg::TmuxSelect { .. }
+            | ClientMsg::TmuxResize { .. }
+            | ClientMsg::TmuxKeys { .. }
+            | ClientMsg::TmuxNew
+            | ClientMsg::TabList
+            | ClientMsg::TabSelect { .. }
+            | ClientMsg::TabStop
+            | ClientMsg::TabType { .. }
+            | ClientMsg::TabFocus { .. } => None,
             ClientMsg::Move { dx, dy } => Some(InputCmd::Move { dx, dy }),
             ClientMsg::Click { button, double } => Some(InputCmd::Click {
                 button: button.into(),

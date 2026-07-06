@@ -19,4 +19,27 @@ export const msg = {
   text: (s: string) => ({ t: "text", s }),
   key: (k: string) => ({ t: "key", k }),
   chord: (mods: string[], key: string) => ({ t: "chord", mods, key }),
+  // tmux terminal bridge. Output arrives as raw binary frames; keystrokes go
+  // back as raw binary too (not through these JSON builders).
+  tlist: () => ({ t: "tlist" }),
+  tnew: () => ({ t: "tnew" }),
+  tsel: (id: string, cols: number, rows: number) => ({ t: "tsel", id, cols, rows }),
+  tresize: (cols: number, rows: number) => ({ t: "tresize", cols, rows }),
+  // Send hex-encoded key bytes to a specific pane without selecting it
+  // (Approve/Deny on notification cards).
+  tkeys: (id: string, hex: string) => ({ t: "tkeys", id, hex }),
+  // Terminal.app tabs bridge (no tmux). Screen arrives as {"t":"tabscr"} text;
+  // typing uses the regular text/key/chord injection (tab gets focused).
+  tablist: () => ({ t: "tablist" }),
+  tabsel: (win: number, tab: number) => ({ t: "tabsel", win, tab }),
+  tabstop: () => ({ t: "tabstop" }),
+  // Type a line (+newline) into a tab via Apple Events — no focus needed,
+  // works behind the lock screen.
+  tabtype: (win: number, tab: number, text: string) => ({
+    t: "tabtype",
+    win,
+    tab,
+    text,
+  }),
+  tabfocus: (win: number, tab: number) => ({ t: "tabfocus", win, tab }),
 };

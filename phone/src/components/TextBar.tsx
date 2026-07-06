@@ -61,9 +61,9 @@ export function TextBar({ send }: { send: Send }) {
             send(msg.key("backspace"));
           }
         }}
-        placeholder="Type or dictate here → goes to your Mac"
+        placeholder="Type or dictate → your Mac"
         autoCapitalize="sentences"
-        className="min-h-12 flex-1 resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-base outline-none placeholder:text-white/30 focus:border-white/30"
+        className="min-h-12 flex-1 resize-none rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-base outline-none backdrop-blur placeholder:text-white/30 focus:border-emerald-300/40"
       />
       <PadButton accent onPress={submit}>
         ⏎
