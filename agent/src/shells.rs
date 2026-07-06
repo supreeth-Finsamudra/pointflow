@@ -195,19 +195,23 @@ impl Shells {
     }
 
     /// Raw keystrokes for the selected pane.
+    // Never hold `selected` while taking `sessions`: panes_json/prune_dead
+    // lock sessions → selected, so the reverse order can ABBA-deadlock.
     pub fn write_input(&self, bytes: &[u8]) {
-        let selected = self.selected.lock().unwrap();
-        let Some(sel) = selected.as_ref() else { return };
-        if let Some(s) = self.sessions.lock().unwrap().get(&sel.id) {
+        let Some(id) = self.selected.lock().unwrap().as_ref().map(|sel| sel.id.clone()) else {
+            return;
+        };
+        if let Some(s) = self.sessions.lock().unwrap().get(&id) {
             s.term.write_input(bytes);
         }
     }
 
     /// Resize the selected pane to the phone's viewport.
     pub fn resize(&self, cols: u16, rows: u16) {
-        let selected = self.selected.lock().unwrap();
-        let Some(sel) = selected.as_ref() else { return };
-        if let Some(s) = self.sessions.lock().unwrap().get_mut(&sel.id) {
+        let Some(id) = self.selected.lock().unwrap().as_ref().map(|sel| sel.id.clone()) else {
+            return;
+        };
+        if let Some(s) = self.sessions.lock().unwrap().get_mut(&id) {
             s.w = cols;
             s.h = rows;
             s.term.resize(cols, rows);
