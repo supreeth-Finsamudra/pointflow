@@ -1,6 +1,6 @@
 [package]
 name = "pointflow-agent"
-version = "0.1.0-beta.1"
+version = "0.1.0"
 edition = "2021"
 description = "Your phone as trackpad, keyboard and Claude Code remote for your computer"
 repository = "https://github.com/supreeth-Finsamudra/pointflow"
