@@ -1,0 +1,18 @@
+# Injected into every dist build job before the Rust build: the agent embeds
+# the phone UI (rust-embed on ../phone/out), so the UI must exist first.
+- name: Install pnpm
+  uses: pnpm/action-setup@v4
+  with:
+    version: 10
+- name: Install Node
+  uses: actions/setup-node@v4
+  with:
+    node-version: 22
+- name: Build phone UI
+  shell: bash
+  # verify-deps-before-run trips on the sharp/unrs-resolver build scripts,
+  # which a static export doesn't need.
+  run: |
+    cd phone
+    pnpm install
+    pnpm --config.verify-deps-before-run=false build

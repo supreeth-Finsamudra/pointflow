@@ -55,19 +55,21 @@ the PR discussion; ~60 lines, no new wire messages):
   dashboard is wrapper-free on macOS.
 - Later: iTerm2 adapter (it has a real read API), badge on the `>_` button.
 
-## Phase 3 — Distribution & growth
+## Phase 3 — Distribution & growth (see docs/DISTRIBUTION.md for the runbook)
 
-- **Single-file binary**: embed `phone/out` via `rust-embed` (kills the
-  web-dir lookup), then `dist` (cargo-dist) for the release pipeline.
-- **Channels**: GitHub Releases (canonical + download metrics) → Homebrew tap
-  (macOS/Linux) → **winget** (Windows) → `curl | sh` / `irm | iex` one-liners.
-- **Signing**: Apple Developer ID + notarization ($99/yr); Windows via Azure
-  Trusted Signing — unsigned binaries kill adoption at the SmartScreen/Gatekeeper
-  prompt.
-- **Usage metrics**: GitHub Release download counts (free) + opt-in anonymous
-  ping (UUID + version + OS) for real DAU/MAU; `POINTFLOW_NO_TELEMETRY` honored.
-- macOS menu-bar app wrapper (roadmap'd in README) so "install → running" is
-  one step.
+- ✅ **Single-file binary**: `phone/out` embedded via `rust-embed`; verified
+  serving with no files on disk (~4 MB binary).
+- ✅ **Release pipeline**: `dist` (cargo-dist 0.32) → tag push builds
+  mac arm64/x64 + Windows x64, publishes GitHub Release with sh/ps1
+  installers + checksums, pushes the Homebrew formula to the tap.
+- ⏳ **Tap repo + token**: owner-only one-time setup (runbook §one-time).
+- ⏳ **winget**: submit after the first release exists (needs artifact hashes).
+- ⏸ **Signing (last)**: Apple Developer account already in hand — wire
+  Developer ID + notarization into dist config after Windows validation;
+  Azure Trusted Signing for Windows when warranted.
+- Usage metric: GitHub Release download counts (telemetry deliberately not
+  built — decision 2026-07).
+- Later: macOS menu-bar app wrapper so "install → running" is one step.
 
 ## Phase 4 — Platform completeness
 
