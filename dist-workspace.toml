@@ -22,6 +22,6 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msv
 # Path that installers should place binaries in
 install-path = "~/.pointflow/bin"
 # Build the phone UI before cargo builds (rust-embed bakes phone/out in).
-github-build-setup = "build-setup.yml"
+github-build-setup = "../build-setup.yml"
 # Whether to install an updater program
 install-updater = false
