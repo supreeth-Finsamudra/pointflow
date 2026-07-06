@@ -1,13 +1,35 @@
 # PointFlow
 
 **Your phone is now your computer's trackpad, keyboard, terminal — and the
-remote control for your AI coding agents.**
+remote control for your AI coding agents. From anywhere on Earth.**
 
-Swipe to move the cursor. Type or dictate into whatever app has focus. Open
-your shells in a real terminal on your phone, watch Claude Code work, and
-**approve its next step from the couch, the café, or the lock screen.** No app
-install on the phone, no cloud, no account — the agent on your computer serves
-a web page over WiFi and injects real input locally.
+Kick off a Claude Code task, leave the house. Your phone buzzes on the lock
+screen: *"✳ Claude needs your permission."* You tap **Approve ⏎** from the
+café, watch the diff stream by in a real terminal, and prompt the next task —
+over cellular, with no VPN, no phone app, no cloud account. One ~4 MB binary
+on your computer and a QR code is the entire setup.
+
+On your WiFi it's also the best trackpad+keyboard your computer never had:
+swipe to move the cursor, dictate into whatever app has focus, drive your
+shells full-color from the couch.
+
+## The 60-second anywhere demo
+
+```bash
+brew install supreeth-Finsamudra/pointflow/pointflow cloudflared
+pointflow-agent --tunnel
+```
+
+1. Scan the **✦ public QR** it prints (give it ~30 s to go live)
+2. On the phone: Share → **Add to Home Screen** → open from the icon
+3. Tap 🔔 to enable lock-screen notifications
+4. Walk out the door. Your computer — and your Claude Code sessions — are in
+   your pocket.
+
+*Straight talk on security: the tunnel URL is public, so treat it like a
+password — every connection still requires the session token baked into the
+QR, and `pointflow-agent --qr` reprints/rotates your pairing. Skip `--tunnel`
+and nothing ever leaves your LAN.*
 
 ```
             ┌───────────────────────────────────────┐
@@ -20,21 +42,22 @@ a web page over WiFi and injects real input locally.
 
 ## Why people use it
 
+- 🌍 **Works from anywhere** — `--tunnel` prints a public HTTPS QR (Cloudflare
+  quick tunnel): drive your desktop from cellular, a café, another country.
+  No VPN, no port forwarding, no phone app.
+- ✳️ **Claude Code copilot mode** — hook events surface as cards and
+  lock-screen push notifications: *"Claude needs your permission"* →
+  **Approve ⏎ / Deny Esc** from your phone, without the Mac unlocked or the
+  window focused. Prompt it, watch the diff stream by, approve, repeat.
+- 🖥 **Real terminals on your phone** — full-color xterm.js views of your
+  shells with scrollback, quick keys (Esc·Tab·⏎·arrows·⌃C), a compose box
+  built for prompts, even photo-upload-to-file-path for multimodal prompts.
 - 🖱 **A genuinely good trackpad** — sub-pixel pointer with acceleration,
   momentum scrolling, a full gesture vocabulary (tap, drag, two-finger scroll,
   three-finger Mission Control), tunable to your thumb.
 - ⌨️ **Type anywhere** — your phone keyboard (including voice dictation,
   swipe, emoji) lands in whatever has focus on the desktop. Like Whispr
   Flow's "insert text anywhere," but the input device is your phone.
-- 🖥 **Real terminals on your phone** — full-color xterm.js views of your
-  shells with scrollback, quick keys (Esc·Tab·⏎·arrows·⌃C), a compose box
-  built for prompts, even photo-upload-to-file-path for multimodal prompts.
-- ✳️ **Claude Code copilot mode** — hook events surface as cards and
-  lock-screen push notifications: *"Claude needs your permission"* →
-  **Approve ⏎ / Deny Esc** from your phone, without the Mac unlocked or the
-  window focused. Prompt it, watch the diff stream by, approve, repeat.
-- 🌍 **Works away from home** — `--tunnel` prints a public HTTPS QR
-  (Cloudflare quick tunnel): drive your desktop from cellular, no VPN.
 - 🔒 **Local-first** — no cloud, no account, no telemetry. Every connection
   needs the session token from the QR. Your keystrokes never leave your
   network unless *you* start the tunnel.
