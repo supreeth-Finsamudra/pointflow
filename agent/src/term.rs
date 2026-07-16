@@ -6,9 +6,9 @@
 //! the trackpad and keyboard still drive the *computer's* focused app; the
 //! terminal drives *this* shell. Nothing here touches `enigo`.
 //!
-//! On Windows this is the terminal backend (`shells.rs` manages several of
-//! these); Windows exposes no API to read another terminal's buffer, so
-//! phone-visible shells are the ones PointFlow spawns.
+//! On Windows this is the `+ New` terminal backend (`shells.rs` manages
+//! several of these) — full color and TUIs, since PointFlow owns the ConPTY.
+//! Already-running consoles are bridged separately by `wintabs.rs`.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};

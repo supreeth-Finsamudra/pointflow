@@ -22,7 +22,7 @@ roadmap line here.
 | Pixel scrolling | CGEvent pixel units | `SendInput` wheel deltas (fractional-notch; smooth in modern apps) | ✅ implemented |
 | Keep-awake | `/usr/bin/caffeinate` | `SetThreadExecutionState(ES_CONTINUOUS \| ES_SYSTEM_REQUIRED)` | ✅ implemented |
 | Terminal streaming | tmux bridge (`tmux.rs`) | **Owned ConPTY shells** (`shells.rs` over `term.rs` via portable-pty): `+ New` spawns pwsh/powershell/cmd; list/select/type/approve use the same wire protocol, phone unchanged | ✅ implemented |
-| Terminal.app tabs bridge | AppleScript (`tabs.rs`) | No Windows analog (Windows Terminal has no read-buffer API) — hidden on Windows | N/A by OS design |
+| Terminal.app tabs bridge | AppleScript (`tabs.rs`) | Console-API analog (`wintabs.rs`): helper process `AttachConsole`s to running cmd/powershell/pwsh, scrapes the buffer (`ReadConsoleOutputW`), types via `WriteConsoleInputW` — covers Windows Terminal tabs too (ConPTY keeps a real buffer) | ✅ implemented |
 | Claude Code hooks | sh command w/ `$TMUX_PANE` | Shell-agnostic curl command (token embedded at install; no sh-isms) | ✅ implemented |
 | Web Push (lock screen) | web-push crate (ece→openssl) | Disabled stub for now (openssl unbuildable in std Windows CI); see Phase 4 | ⏸ stubbed w/ notice |
 | VAPID keygen | shell-out to `/usr/bin/openssl` | Pure-Rust `p256` SEC1 PEM on all non-Windows (removes runtime openssl everywhere) | ✅ implemented |

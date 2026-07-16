@@ -5,9 +5,9 @@ use serde::Deserialize;
 use crate::input::{ChordKey, InputCmd, Modifier, MouseButton, SpecialKey};
 
 /// A message from the phone. The first message on a connection MUST be `Auth`.
-// The Tab* variant fields are only read on macOS (Terminal.app bridge);
-// elsewhere they're deserialized and discarded.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+// The Tab* variant fields are only read on macOS (Terminal.app bridge) and
+// Windows (console bridge); elsewhere they're deserialized and discarded.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 pub enum ClientMsg {

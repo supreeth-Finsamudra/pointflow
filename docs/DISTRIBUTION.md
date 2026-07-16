@@ -81,6 +81,10 @@ Run on a real Windows 10/11 machine (`cargo run` from a clone, or the built exe)
 - [ ] Typing via the text bar lands in the focused app; special keys + chords
 - [ ] `>_` → `+ New` spawns a shell (pwsh/powershell/cmd); xterm view streams;
       typing/quick keys work; second shell + switching works
+- [ ] Already-open consoles appear under "Terminal tabs" (test a classic
+      conhost window AND a Windows Terminal tab): screen streams, scrollback
+      replays, compose-box typing lands (incl. with the PC locked); a shell
+      PointFlow spawned does NOT appear in the list
 - [ ] `claude` inside a PointFlow shell: hook events arrive as cards
       (after `pointflow-agent --install-hooks`)
 - [ ] `--tunnel` with cloudflared installed: public URL works from cellular

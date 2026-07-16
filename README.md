@@ -93,12 +93,28 @@ Only the trackpad/keyboard injection needs it (the terminal bridge doesn't):
 **System Settings → Privacy & Security → Accessibility** → enable your
 terminal, restart the agent.
 
+## Surviving reboots & power loss
+
+```bash
+pointflow-agent --install-service            # macOS: start at login, restart on crash
+pointflow-agent --install-service --tunnel   # same, with the public tunnel
+sudo pmset autorestart on                    # desktop Macs: power back on after an outage
+```
+
+After a power cut, the machine boots, the agent comes back by itself, your
+**tmux shells are rebuilt from a rolling snapshot** (same sessions, same
+folders — panes that were running Claude Code resume with
+`claude --continue`), and your phone gets a **"back online" push carrying the
+fresh link** (quick tunnels mint a new URL each start; on plain LAN the old
+QR keeps working — give the machine a DHCP reservation so the IP is stable).
+Remove with `--uninstall-service`. Windows service support is on the roadmap.
+
 ## The terminal bridge, by platform
 
 | Platform | What you get |
 | --- | --- |
 | **macOS / Linux** | Your **tmux panes**: list all, pick one, full scrollback with colors, type into unfocused panes (`send-keys` byte-exact), live streaming via a real attached client. macOS additionally bridges **already-open Terminal.app tabs** — zero setup, no tmux needed. `+ New` on the phone spawns a fresh shell. |
-| **Windows** *(beta)* | `+ New` spawns PointFlow-owned **ConPTY** shells (pwsh/powershell/cmd) with the same phone UX. (Windows exposes no API to read other terminals' buffers — so shells live inside PointFlow.) |
+| **Windows** *(beta)* | Your **already-running console shells** (pwsh/powershell/cmd — including Windows Terminal tabs): list them, watch the live screen + scrollback (plain text, via the console API), and type into them without focus, even behind the lock screen. `+ New` additionally spawns PointFlow-owned **ConPTY** shells with the full-color phone UX. |
 
 Why tmux underneath: it's the one clean way to read *and* drive
 already-running shells — it owns the text, history, and stdin, so the phone

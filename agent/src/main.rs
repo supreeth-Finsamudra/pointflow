@@ -6,12 +6,14 @@
 //!
 //! Terminal backend per platform: macOS/Linux bridge to the user's tmux panes
 //! (`tmux.rs`, plus macOS Terminal.app tabs via `tabs.rs`); Windows manages
-//! PointFlow-owned ConPTY shells (`shells.rs`) — same wire protocol either way.
+//! PointFlow-owned ConPTY shells (`shells.rs`) and bridges to already-running
+//! console shells (`wintabs.rs`) — same wire protocol either way.
 
 mod hooks;
 mod input;
 mod protocol;
 mod push;
+mod service;
 #[cfg(windows)]
 mod shells;
 #[cfg(target_os = "macos")]
@@ -21,6 +23,8 @@ mod term;
 #[cfg(unix)]
 mod tmux;
 mod util;
+#[cfg(windows)]
+mod wintabs;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -53,6 +57,8 @@ use tabs::Tabs;
 #[cfg(unix)]
 use tmux::Tmux as ShellBackend;
 use util::home_dir;
+#[cfg(windows)]
+use wintabs::Tabs;
 
 /// Default listen port. Override with POINTFLOW_PORT.
 const DEFAULT_PORT: u16 = 8742;
@@ -74,8 +80,9 @@ struct AppState {
     /// Copilot events (from Claude Code hooks) and Terminal-tab streams fanned
     /// out to phones, as ready-to-send JSON strings.
     events: broadcast::Sender<String>,
-    /// Bridge to already-open Terminal.app tabs (no tmux required).
-    #[cfg(target_os = "macos")]
+    /// Bridge to already-open terminals: Terminal.app tabs on macOS, running
+    /// console shells on Windows (no tmux required either way).
+    #[cfg(any(target_os = "macos", windows))]
     tabs: Arc<Tabs>,
     /// Web Push (lock-screen notifications). None if VAPID setup failed or
     /// unsupported on this OS.
@@ -84,6 +91,11 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
+    // Hidden `--console-*` helper modes (this exe relaunched to attach to
+    // another shell's console — see wintabs.rs). Never returns if one matched.
+    #[cfg(windows)]
+    wintabs::maybe_run_helper();
+
     let port: u16 = std::env::var("POINTFLOW_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
@@ -113,6 +125,17 @@ async fn main() {
         return;
     }
 
+    // `--install-service` keeps the agent alive across reboots and power
+    // loss (auto-start + restart-on-crash; see service.rs), then exits.
+    if std::env::args().any(|a| a == "--install-service") {
+        service::install(std::env::args().any(|a| a == "--tunnel"));
+        return;
+    }
+    if std::env::args().any(|a| a == "--uninstall-service") {
+        service::uninstall();
+        return;
+    }
+
     // Dedicated thread owns the (non-Send) input engine; we feed it commands.
     let (tx, rx) = crossbeam_channel::unbounded::<InputCmd>();
     std::thread::spawn(move || input::run(rx));
@@ -121,11 +144,20 @@ async fn main() {
     // Code) stay reachable with the display off/locked.
     keep_awake();
 
+    // After a reboot/power loss, rebuild the user's tmux world (same
+    // sessions, same cwds, Claude conversations resumed) before phones
+    // connect — then keep snapshotting it for the next outage.
+    #[cfg(unix)]
+    {
+        tmux::restore_if_needed();
+        std::thread::spawn(tmux::snapshot_loop);
+    }
+
     // Terminal backend: tmux bridge (unix) or owned ConPTY shells (Windows).
     let shells = ShellBackend::new();
     let (events, _) = broadcast::channel::<String>(64);
-    // Bridge to already-open Terminal.app tabs; streams share the events pipe.
-    #[cfg(target_os = "macos")]
+    // Bridge to already-open terminals; streams share the events pipe.
+    #[cfg(any(target_os = "macos", windows))]
     let tabs = Tabs::start(events.clone());
 
     let web_dir = std::env::var("POINTFLOW_WEB_DIR").ok().map(PathBuf::from);
@@ -135,10 +167,12 @@ async fn main() {
         tx,
         shells,
         events,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         tabs,
         push: Push::init().map(Arc::new),
     };
+    // Kept for the startup "back online" pushes below; the router takes `state`.
+    let push_handle = state.push.clone();
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
@@ -163,9 +197,28 @@ async fn main() {
     // `--tunnel`: also expose the agent at a public HTTPS URL via a Cloudflare
     // quick tunnel — works from any network, no VPN on the phone. The session
     // token still gates every connection.
-    if std::env::args().any(|a| a == "--tunnel") {
+    let tunnel_requested = std::env::args().any(|a| a == "--tunnel");
+    if tunnel_requested {
         let token = token.clone();
-        tokio::spawn(async move { run_tunnel(port, token).await });
+        let push = push_handle.clone();
+        tokio::spawn(async move { run_tunnel(port, token, push).await });
+    }
+
+    // Service-managed (re)start — a reboot, power back after an outage, or a
+    // crash restart: tell subscribed phones the agent is reachable again.
+    // Tunnel runs push their own (freshly-minted) URL from run_tunnel instead.
+    if !tunnel_requested && std::env::var_os("POINTFLOW_SERVICE").is_some() {
+        if let Some(push) = push_handle {
+            let url = url.clone();
+            tokio::spawn(async move {
+                push.notify_all(
+                    "✦ PointFlow is back online",
+                    "Tap to reconnect to your shells",
+                    Some(&url),
+                )
+                .await;
+            });
+        }
     }
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -321,7 +374,7 @@ async fn event_handler(
         } else {
             format!("{message} — {label}")
         };
-        tokio::spawn(async move { push.notify_all(&title, &body).await });
+        tokio::spawn(async move { push.notify_all(&title, &body, None).await });
     }
     StatusCode::NO_CONTENT
 }
@@ -490,29 +543,30 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                                     out_tx.send(Message::Text(state.shells.panes_json()));
                             }
                         }
-                        // Terminal.app tabs exist only on macOS; elsewhere the
-                        // phone gets an empty list and the section stays quiet.
-                        #[cfg(target_os = "macos")]
+                        // Already-open terminals: Terminal.app tabs (macOS) or
+                        // console shells (Windows); elsewhere the phone gets an
+                        // empty list and the section stays quiet.
+                        #[cfg(any(target_os = "macos", windows))]
                         ClientMsg::TabList => {
                             let _ = out_tx.send(Message::Text(state.tabs.tabs_json()));
                         }
-                        #[cfg(not(target_os = "macos"))]
+                        #[cfg(not(any(target_os = "macos", windows)))]
                         ClientMsg::TabList => {
                             let _ = out_tx.send(Message::Text(
                                 "{\"t\":\"tabs\",\"tabs\":[]}".to_string(),
                             ));
                         }
-                        #[cfg(target_os = "macos")]
+                        #[cfg(any(target_os = "macos", windows))]
                         ClientMsg::TabSelect { win, tab } => state.tabs.select(win, tab),
-                        #[cfg(target_os = "macos")]
+                        #[cfg(any(target_os = "macos", windows))]
                         ClientMsg::TabStop => state.tabs.stop(),
-                        #[cfg(target_os = "macos")]
+                        #[cfg(any(target_os = "macos", windows))]
                         ClientMsg::TabType { win, tab, text } => {
                             state.tabs.type_line(win, tab, &text)
                         }
-                        #[cfg(target_os = "macos")]
+                        #[cfg(any(target_os = "macos", windows))]
                         ClientMsg::TabFocus { win, tab } => state.tabs.focus(win, tab),
-                        #[cfg(not(target_os = "macos"))]
+                        #[cfg(not(any(target_os = "macos", windows)))]
                         ClientMsg::TabSelect { .. }
                         | ClientMsg::TabStop
                         | ClientMsg::TabType { .. }
@@ -532,7 +586,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     }
 
     state.shells.stop();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     state.tabs.stop();
     pump.abort();
     events_task.abort();
@@ -585,7 +639,9 @@ async fn upload_handler(
 
 /// Spawn `cloudflared` as a quick tunnel to this agent and print the public
 /// pairing QR/URL once the edge assigns one. Runs for the agent's lifetime.
-async fn run_tunnel(port: u16, token: String) {
+/// Quick tunnels mint a new hostname every start, so once the URL is known
+/// it's also pushed to subscribed phones (the old link died with the reboot).
+async fn run_tunnel(port: u16, token: String, push: Option<Arc<Push>>) {
     // Well-known install spots first (a minimal PATH is common under launchd);
     // otherwise trust PATH — winget/choco/apt all put cloudflared there.
     #[cfg(target_os = "macos")]
@@ -640,7 +696,16 @@ async fn run_tunnel(port: u16, token: String) {
                 if let Some(url) = extract_tunnel_url(&line) {
                     announced = true;
                     println!("\n  ✦ Public tunnel ready — works from ANY network:\n");
-                    print_qr(&format!("{url}/?token={token}"));
+                    let link = format!("{url}/?token={token}");
+                    print_qr(&link);
+                    if let Some(push) = &push {
+                        push.notify_all(
+                            "✦ PointFlow is back online",
+                            "New public link after a restart — tap to reconnect",
+                            Some(&link),
+                        )
+                        .await;
+                    }
                 }
             }
             Err(_) => break,

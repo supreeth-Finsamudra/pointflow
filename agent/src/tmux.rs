@@ -17,7 +17,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 /// Buffered output messages before a slow phone is dropped to the latest.
@@ -328,4 +328,184 @@ fn tmux_bin() -> &'static str {
         }
     }
     "tmux"
+}
+
+// ------------------------------------------------- reboot resurrection --
+
+/// One pane of the periodic layout snapshot (`~/.pointflow/shells.json`).
+#[derive(Serialize, Deserialize)]
+struct SavedPane {
+    session: String,
+    window: u32,
+    window_name: String,
+    cwd: String,
+    cmd: String,
+}
+
+fn snapshot_path() -> Option<std::path::PathBuf> {
+    crate::util::state_dir().map(|d| d.join("shells.json"))
+}
+
+/// Every 30 s, save the tmux world (sessions → windows → pane cwd/command)
+/// so `restore_if_needed` can rebuild it after a reboot or power loss.
+/// Writes only while a server is actually running: a dead server must never
+/// erase the last good snapshot — that's exactly the one we restore from.
+pub fn snapshot_loop() {
+    let fmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}";
+    loop {
+        if let Ok(out) = Command::new(tmux_bin())
+            .args(["list-panes", "-a", "-F", fmt])
+            .output()
+        {
+            if out.status.success() {
+                let panes: Vec<SavedPane> = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let f: Vec<&str> = line.split('\t').collect();
+                        (f.len() >= 5).then(|| SavedPane {
+                            session: f[0].to_string(),
+                            window: f[1].parse().unwrap_or(0),
+                            window_name: f[2].to_string(),
+                            cwd: f[3].to_string(),
+                            cmd: f[4].to_string(),
+                        })
+                    })
+                    .collect();
+                if let (Some(path), Ok(json)) =
+                    (snapshot_path(), serde_json::to_string_pretty(&panes))
+                {
+                    if let Some(dir) = path.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    // Write-then-rename so a power cut mid-write can't
+                    // corrupt the snapshot we'd restore from.
+                    let tmp = path.with_extension("json.tmp");
+                    if std::fs::write(&tmp, json).is_ok() {
+                        let _ = std::fs::rename(&tmp, &path);
+                    }
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+}
+
+/// If the tmux server is gone (fresh boot) and a snapshot exists, rebuild
+/// it: every session and window comes back at its old cwd, and panes that
+/// were running Claude Code get `claude --continue` typed in — same shells,
+/// conversations resumed. Never touches a live server, so a plain agent
+/// restart is a no-op. Escape hatch: POINTFLOW_NO_RESTORE=1.
+pub fn restore_if_needed() {
+    if std::env::var_os("POINTFLOW_NO_RESTORE").is_some() {
+        return;
+    }
+    let server_up = Command::new(tmux_bin())
+        .args(["list-panes", "-a"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if server_up {
+        return;
+    }
+    let Some(panes) = snapshot_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<Vec<SavedPane>>(&s).ok())
+    else {
+        return;
+    };
+    if panes.is_empty() {
+        return;
+    }
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let dir_or_home = |cwd: &str| {
+        if Path::new(cwd).is_dir() {
+            cwd.to_string()
+        } else {
+            home.clone()
+        }
+    };
+
+    // Group in saved order: session → windows (by saved index) → panes.
+    let mut sessions: Vec<(String, Vec<(u32, String, Vec<&SavedPane>)>)> = Vec::new();
+    for p in &panes {
+        let session = match sessions.iter_mut().find(|(name, _)| *name == p.session) {
+            Some(s) => s,
+            None => {
+                sessions.push((p.session.clone(), Vec::new()));
+                sessions.last_mut().unwrap()
+            }
+        };
+        match session.1.iter_mut().find(|(idx, _, _)| *idx == p.window) {
+            Some(w) => w.2.push(p),
+            None => session.1.push((p.window, p.window_name.clone(), vec![p])),
+        }
+    }
+    for (_, windows) in &mut sessions {
+        windows.sort_by_key(|(idx, _, _)| *idx);
+    }
+
+    // Recreate. `-P -F #{pane_id}` returns the created pane so splits and
+    // send-keys target exactly what we just made, whatever the user's
+    // base-index is.
+    let create = |args: &[&str]| -> Option<String> {
+        let out = Command::new(tmux_bin()).args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let (mut restored, mut resumed) = (0u32, 0u32);
+    for (session, windows) in &sessions {
+        let mut first_window = true;
+        for (_, window_name, window_panes) in windows {
+            let mut anchor: Option<String> = None;
+            for pane in window_panes {
+                let cwd = dir_or_home(&pane.cwd);
+                let id = match &anchor {
+                    None if first_window => create(&[
+                        "new-session", "-d", "-s", session, "-n", window_name, "-c", &cwd,
+                        "-P", "-F", "#{pane_id}",
+                    ]),
+                    None => create(&[
+                        "new-window", "-t", session, "-n", window_name, "-c", &cwd, "-P",
+                        "-F", "#{pane_id}",
+                    ]),
+                    Some(a) => create(&[
+                        "split-window", "-t", a, "-c", &cwd, "-P", "-F", "#{pane_id}",
+                    ]),
+                };
+                let Some(id) = id else { continue };
+                restored += 1;
+                // Resume Claude Code where it was running — the native binary
+                // reports itself as "claude" or "claude_exe" depending on the
+                // install. (npm-shim installs show up as "node" — too
+                // ambiguous to auto-run, skipped.)
+                if pane.cmd.starts_with("claude") {
+                    let ok = Command::new(tmux_bin())
+                        .args(["send-keys", "-t", &id, "claude --continue", "Enter"])
+                        .status()
+                        .is_ok_and(|s| s.success());
+                    if ok {
+                        resumed += 1;
+                    }
+                }
+                if anchor.is_none() {
+                    anchor = Some(id);
+                }
+            }
+            if anchor.is_some() {
+                first_window = false;
+            }
+        }
+    }
+    if restored > 0 {
+        println!(
+            "[pointflow] restored {restored} shell(s) from the last snapshot\
+             {}",
+            if resumed > 0 {
+                format!(" — resumed {resumed} Claude session(s) with `claude --continue`")
+            } else {
+                String::new()
+            }
+        );
+    }
 }

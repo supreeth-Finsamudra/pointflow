@@ -66,14 +66,19 @@ mod real {
         }
 
         /// Fire a notification to every subscribed device. Expired subscriptions
-        /// are pruned. Failures are logged, never fatal.
-        pub async fn notify_all(&self, title: &str, body: &str) {
+        /// are pruned. Failures are logged, never fatal. `url`, when given, is
+        /// opened on tap (the "back online after a restart" reconnect path —
+        /// it may be a brand-new tunnel origin).
+        pub async fn notify_all(&self, title: &str, body: &str, url: Option<&str>) {
             let subs = self.subs.lock().unwrap().clone();
             if subs.is_empty() {
                 return;
             }
-            let payload =
-                serde_json::json!({ "title": title, "body": body }).to_string();
+            let mut payload = serde_json::json!({ "title": title, "body": body });
+            if let Some(u) = url {
+                payload["url"] = serde_json::Value::String(u.to_string());
+            }
+            let payload = payload.to_string();
 
             let client = match IsahcWebPushClient::new() {
                 Ok(c) => c,
@@ -157,7 +162,7 @@ mod real {
             false
         }
 
-        pub async fn notify_all(&self, _title: &str, _body: &str) {}
+        pub async fn notify_all(&self, _title: &str, _body: &str, _url: Option<&str>) {}
     }
 }
 
