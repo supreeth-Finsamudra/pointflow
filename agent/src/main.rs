@@ -112,6 +112,7 @@ async fn main() {
     // can re-pair a device without restarting (or disturbing) a running agent.
     if std::env::args().any(|a| a == "--qr") {
         print_qr(&url);
+        println!("  (Phone and computer must be on the same WiFi network.)");
         return;
     }
 
@@ -654,64 +655,82 @@ async fn run_tunnel(port: u16, token: String, push: Option<Arc<Push>>) {
         .copied()
         .unwrap_or("cloudflared");
 
-    let mut child = match tokio::process::Command::new(bin)
-        .args([
-            "tunnel",
-            "--url",
-            &format!("http://127.0.0.1:{port}"),
-            "--no-autoupdate",
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            #[cfg(target_os = "macos")]
-            eprintln!("[pointflow] --tunnel needs cloudflared: brew install cloudflared");
-            #[cfg(windows)]
-            eprintln!(
-                "[pointflow] --tunnel needs cloudflared: winget install Cloudflare.cloudflared"
-            );
-            #[cfg(not(any(target_os = "macos", windows)))]
-            eprintln!("[pointflow] --tunnel needs cloudflared on PATH");
-            return;
-        }
-    };
-
-    let Some(stderr) = child.stderr.take() else { return };
-    let mut lines = tokio::io::BufReader::new(stderr);
-    let mut announced = false;
-    let mut line = String::new();
-    use tokio::io::AsyncBufReadExt;
+    // Quick tunnels drop (edge restarts, network blips), so keep respawning
+    // cloudflared for the agent's lifetime. Each new tunnel gets a new
+    // hostname; subscribed phones are pushed the fresh link every time.
+    let mut delay_secs = 5u64;
     loop {
-        line.clear();
-        match lines.read_line(&mut line).await {
-            Ok(0) => break, // cloudflared exited
-            Ok(_) => {
-                if announced {
-                    continue;
-                }
-                if let Some(url) = extract_tunnel_url(&line) {
-                    announced = true;
-                    println!("\n  ✦ Public tunnel ready — works from ANY network:\n");
-                    let link = format!("{url}/?token={token}");
-                    print_qr(&link);
-                    if let Some(push) = &push {
-                        push.notify_all(
-                            "✦ PointFlow is back online",
-                            "New public link after a restart — tap to reconnect",
-                            Some(&link),
-                        )
-                        .await;
+        let mut child = match tokio::process::Command::new(bin)
+            .args([
+                "tunnel",
+                "--url",
+                &format!("http://127.0.0.1:{port}"),
+                "--no-autoupdate",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                // Missing binary won't fix itself — tell the user and stop.
+                #[cfg(target_os = "macos")]
+                eprintln!("[pointflow] --tunnel needs cloudflared: brew install cloudflared");
+                #[cfg(windows)]
+                eprintln!(
+                    "[pointflow] --tunnel needs cloudflared: winget install Cloudflare.cloudflared"
+                );
+                #[cfg(not(any(target_os = "macos", windows)))]
+                eprintln!("[pointflow] --tunnel needs cloudflared on PATH");
+                return;
+            }
+        };
+
+        let mut announced = false;
+        if let Some(stderr) = child.stderr.take() {
+            let mut lines = tokio::io::BufReader::new(stderr);
+            let mut line = String::new();
+            use tokio::io::AsyncBufReadExt;
+            loop {
+                line.clear();
+                match lines.read_line(&mut line).await {
+                    Ok(0) => break, // cloudflared exited
+                    Ok(_) => {
+                        if announced {
+                            continue;
+                        }
+                        if let Some(url) = extract_tunnel_url(&line) {
+                            announced = true;
+                            println!(
+                                "\n  ✦ Public tunnel ready — works from ANY network:\n"
+                            );
+                            let link = format!("{url}/?token={token}");
+                            print_qr(&link);
+                            println!("  (This link works from ANY network — no WiFi needed.)");
+                            if let Some(push) = &push {
+                                push.notify_all(
+                                    "✦ PointFlow is back online",
+                                    "New public link — tap to reconnect",
+                                    Some(&link),
+                                )
+                                .await;
+                            }
+                        }
                     }
+                    Err(_) => break,
                 }
             }
-            Err(_) => break,
         }
+
+        // A run that announced a URL was healthy: retry quickly. Repeated
+        // failures (offline, blocked) back off to every 5 minutes.
+        delay_secs = if announced { 5 } else { (delay_secs * 2).min(300) };
+        eprintln!(
+            "[pointflow] tunnel dropped (cloudflared exited) — restarting in {delay_secs}s"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
     }
-    eprintln!("[pointflow] tunnel closed (cloudflared exited)");
 }
 
 /// Pull "https://xxx.trycloudflare.com" out of a cloudflared log line.
@@ -789,11 +808,11 @@ fn print_qr(url: &str) {
 
     println!("  Scan the QR with your phone, or open this on your phone:\n");
     println!("    {url}\n");
-    println!("  (Phone and computer must be on the same WiFi network.)");
 }
 
 fn print_banner(url: &str, web_dir: Option<&Path>) {
     print_qr(url);
+    println!("  (Phone and computer must be on the same WiFi network.)");
 
     match web_dir {
         Some(dir) if !dir.join("index.html").exists() => eprintln!(
